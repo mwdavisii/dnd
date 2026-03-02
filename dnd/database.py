@@ -3,6 +3,7 @@ import sqlite3
 import json
 import random
 from .npc.prompts import NPC_ARCHETYPES
+from .data import SPELL_DATA
 
 DB_FILE = "dnd_game.db"
 
@@ -22,8 +23,8 @@ def seed_npcs():
 
     for npc in selected_npcs:
         cursor.execute(
-            "INSERT INTO characters (name, class_name, hp_current, hp_max, stats, level, proficiency_bonus, hit_die_type, hit_dice_max, hit_dice_current) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (npc['name'], npc['class'], npc['hp'], npc['hp'], json.dumps(npc['stats']), 1, 2, npc.get('hit_die', 'd8'), 1, 1)
+            "INSERT INTO characters (name, class_name, hp_current, hp_max, stats, level, proficiency_bonus, hit_die_type, hit_dice_max, hit_dice_current, gold) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (npc['name'], npc['class'], npc['hp'], npc['hp'], json.dumps(npc['stats']), 1, 2, npc.get('hit_die', 'd8'), 1, 1, 50)
         )
         npc_id = cursor.lastrowid
         for item in npc['inventory']:
@@ -45,13 +46,17 @@ def initialize_database():
         hit_dice_max INTEGER DEFAULT 1, hit_dice_current INTEGER DEFAULT 1,
         spell_slots_l1_current INTEGER DEFAULT 0, spell_slots_l1_max INTEGER DEFAULT 0,
         spell_slots_l2_current INTEGER DEFAULT 0, spell_slots_l2_max INTEGER DEFAULT 0,
-        spell_slots_l3_current INTEGER DEFAULT 0, spell_slots_l3_max INTEGER DEFAULT 0
+        spell_slots_l3_current INTEGER DEFAULT 0, spell_slots_l3_max INTEGER DEFAULT 0,
+        gold INTEGER DEFAULT 0,
+        is_concentrating INTEGER DEFAULT 0,
+        is_raging INTEGER DEFAULT 0,
+        is_player INTEGER DEFAULT 0
     );""")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS inventory (
         id INTEGER PRIMARY KEY AUTOINCREMENT, character_id INTEGER, item_name TEXT NOT NULL,
-        quantity INTEGER DEFAULT 1, FOREIGN KEY (character_id) REFERENCES characters (id)
+        quantity INTEGER DEFAULT 1, equipped INTEGER DEFAULT 0, FOREIGN KEY (character_id) REFERENCES characters (id)
     );""")
 
     cursor.execute("""
@@ -79,11 +84,18 @@ def initialize_database():
         FOREIGN KEY (character_id) REFERENCES characters (id),
         FOREIGN KEY (spell_id) REFERENCES spells (id)
     );""")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS conditions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER,
+        condition_name TEXT NOT NULL,
+        duration_turns INTEGER DEFAULT -1,
+        FOREIGN KEY (character_id) REFERENCES characters (id)
+    );""")
     
     conn.commit()
     conn.close()
-
-from .data import SPELL_DATA
 
 def seed_spells():
     """Seeds the database with master spell data if the table is empty."""

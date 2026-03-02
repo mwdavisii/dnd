@@ -1,4 +1,6 @@
+import re
 import os
+import json
 from dnd.dm.agent import DungeonMaster
 from dnd.dm.prompts import ADVENTURE_START_PROMPT
 from dnd.npc.agent import NPCAgent
@@ -7,6 +9,8 @@ from dnd.game import roll_dice
 from dnd.character import CharacterSheet
 from dnd.database import initialize_database, get_db_connection, seed_npcs, seed_spells, DB_FILE
 from dnd.character_creator import run_character_creation, clear_screen
+from dnd.data import STORE_INVENTORY # Import STORE_INVENTORY
+from dnd.cli import CommandHandler
 
 def main():
     """Main function to run the D&D game."""
@@ -34,9 +38,9 @@ def main():
     conn = get_db_connection()
     # Get player name if not already set from character creation
     if player_name == "Player":
-        player_name = conn.execute("SELECT name FROM characters WHERE level = 1").fetchone()['name']
-    
-    npc_names = [row['name'] for row in conn.execute("SELECT name FROM characters WHERE name != ?", (player_name,)).fetchall()]
+        player_name = conn.execute("SELECT name FROM characters WHERE is_player = 1").fetchone()['name']
+
+    npc_names = [row['name'] for row in conn.execute("SELECT name FROM characters WHERE is_player = 0").fetchall()]
     conn.close()
 
     player_sheet = CharacterSheet(name=player_name)
@@ -52,11 +56,13 @@ def main():
             character_sheets[name.lower()] = CharacterSheet(name=name)
             npcs[name.lower()] = NPCAgent(
                 name=archetype['name'],
+                class_name=archetype['class'],
                 system_prompt=archetype['system_prompt']
             )
             companion_descriptions.append(f"{archetype['name']} the {archetype['class'].lower()}")
     
     dm = DungeonMaster()
+    handler = CommandHandler(player_sheet, character_sheets, npcs, dm)
 
     # --- Game Start ---
     clear_screen()
@@ -76,90 +82,62 @@ def main():
                 print("The adventure ends... for now.")
                 break
 
-            if user_input.lower().startswith("/"):
-                # Handle commands
-                parts = user_input.split(" ", 1)
-                command = parts[0].lower()
-                args = parts[1] if len(parts) > 1 else ""
-
-                if command == "/roll":
-                    try:
-                        total, explanation = roll_dice(args)
-                        print(explanation)
-                    except ValueError as e:
-                        print(e)
-                elif command == "/sheet":
-                    print(player_sheet)
-                elif command == "/testhp":
-                    try:
-                        player_sheet.update_hp(int(args))
-                    except (ValueError, IndexError):
-                        print("Usage: /testhp <amount>")
-                elif command == "/attack":
-                    weapon_name = args.strip().title()
-                    if not weapon_name:
-                        print("Usage: /attack <weapon name>")
-                    elif weapon_name in player_sheet.inventory:
-                        bonus = player_sheet.get_attack_bonus(weapon_name)
-                        damage = player_sheet.get_damage_roll(weapon_name)
-                        print(f"Attacking with {weapon_name}:")
-                        print(f"  Attack Bonus: 1d20 + {bonus}")
-                        print(f"  Damage: {damage}")
-                    else:
-                        print(f"You do not have a '{weapon_name}' in your inventory.")
-                elif command == "/cast":
-                    spell_name = args.strip().title()
-                    known_spell = next((s for s in player_sheet.spells if s['name'].title() == spell_name), None)
-                    
-                    if not spell_name:
-                        print("Usage: /cast <spell name>")
-                    elif known_spell:
-                        if player_sheet.cast_spell(known_spell['level']):
-                            print(f"You cast {spell_name}.")
-                            # Now, tell the DM about it
-                            user_input = f"I cast the {spell_name} spell."
-                            # This will fall through to the DM response logic below
-                        else:
-                            print(f"You don't have any level {known_spell['level']} spell slots left.")
-                            continue # Don't send to DM
-                    else:
-                        print(f"You don't know the spell '{spell_name}'.")
-                        continue # Don't send to DM
-                else:
-                    print(f"Unknown command: {command}")
-                continue
-
-            # If we are here after a /cast, the user_input has been modified
-            # to inform the DM of the action.
-
-            if user_input.lower().startswith("ask "):
-                parts = user_input.split(" ", 2)
-                if len(parts) < 3:
-                    print("To talk to an NPC, use 'ask <name> <message>'")
+            if user_input.lower().startswith("/") or user_input.lower().startswith("ask "):
+                skip_dm, user_input = handler.handle(user_input)
+                if skip_dm:
                     continue
-                
-                npc_name = parts[1].lower()
-                message = parts[2]
-                
-                if npc_name in npcs:
-                    print(f"\n{npcs[npc_name].name}: ", end='')
-                    npcs[npc_name].generate_response(message, dm.history)
-                else:
-                    print(f"You don't have a companion named {npc_name}.")
-                continue
+                if not user_input:
+                    continue
 
             print("\nDM: ", end='')
-            response = dm.generate_response(user_input, player_sheet)
+            response = dm.generate_response(user_input, player_sheet, npcs)
 
+            # Check for level up
             if "<level_up />" in response:
                 print("\n--- LEVEL UP! ---")
                 for sheet in character_sheets.values():
                     sheet.level_up()
                 print("-----------------")
+            
+            # Check for gold award
+            gold_match = re.search(r'<award_gold amount="(\d+)"(?: reason="[^"]*")? />', response)
+            if gold_match:
+                amount = int(gold_match.group(1))
+                player_sheet.add_gold(amount)
+                # Remove tag from DM response for cleaner display
+                response = re.sub(r'<award_gold amount="(\d+)"(?: reason="[^"]*")? />', '', response).strip()
+
 
         except (KeyboardInterrupt, EOFError):
             print("\nThe adventure ends... for now.")
             break
+
+        update_condition_durations()
+
+def update_condition_durations():
+    """Updates the duration of conditions for all characters."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    characters = cursor.execute("SELECT id FROM characters").fetchall()
+    
+    for char_row in characters:
+        character_id = char_row['id']
+        conditions = cursor.execute("SELECT id, duration_turns FROM conditions WHERE character_id = ?", (character_id,)).fetchall()
+        
+        for cond_row in conditions:
+            condition_id = cond_row['id']
+            duration = cond_row['duration_turns']
+            
+            if duration > 0:
+                new_duration = duration - 1
+                if new_duration == 0:
+                    cursor.execute("DELETE FROM conditions WHERE id = ?", (condition_id,))
+                else:
+                    cursor.execute("UPDATE conditions SET duration_turns = ? WHERE id = ?", (new_duration, condition_id))
+    
+    conn.commit()
+    conn.close()
 
 if __name__ == "__main__":
     main()

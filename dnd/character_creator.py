@@ -101,8 +101,9 @@ def run_character_creation():
     con_modifier = _get_modifier_from_score(stats["CON"])
     max_hp = class_info['hp_base'] + con_modifier
     l1_slots = class_info.get('spell_slots_l1', 0)
+    starting_gold = class_info.get('starting_gold', 0)
     try:
-        cursor.execute( "INSERT INTO characters (name, class_name, hp_current, hp_max, stats, level, proficiency_bonus, hit_die_type, hit_dice_max, hit_dice_current, spell_slots_l1_max, spell_slots_l1_current) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (char_name, chosen_class_name, max_hp, max_hp, json.dumps(stats), 1, 2, class_info['hit_die'], 1, 1, l1_slots, l1_slots) )
+        cursor.execute( "INSERT INTO characters (name, class_name, hp_current, hp_max, stats, level, proficiency_bonus, hit_die_type, hit_dice_max, hit_dice_current, spell_slots_l1_max, spell_slots_l1_current, gold, is_player) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (char_name, chosen_class_name, max_hp, max_hp, json.dumps(stats), 1, 2, class_info['hit_die'], 1, 1, l1_slots, l1_slots, starting_gold, 1) )
         char_id = cursor.lastrowid
         all_profs = class_info['proficiencies'] + bg_info['proficiencies'] + bg_info['tools']
         _handle_proficiencies(conn, char_id, all_profs, [])

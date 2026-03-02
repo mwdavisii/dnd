@@ -7,12 +7,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class NPCAgent:
-    def __init__(self, name: str, system_prompt: str):
+    def __init__(self, name: str, class_name: str, system_prompt: str):
         self.name = name
+        self.class_name = class_name
         self.system_prompt = system_prompt
         self.history = [] # This will store direct interactions with the NPC
         self.ollama_host = os.getenv("OLLAMA_HOST")
         self.ollama_model = os.getenv("OLLAMA_MODEL")
+        if not self.ollama_host or not self.ollama_model:
+            raise ValueError("OLLAMA_HOST and OLLAMA_MODEL must be set in .env file")
 
     def generate_response(self, prompt: str, game_context: list) -> str:
         self.history.append({"role": "user", "content": prompt})
