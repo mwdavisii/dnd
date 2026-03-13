@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from main import choose_save_file
+from main import choose_save_file, run_initial_setup
 
 
 def test_choose_save_file_shows_created_and_last_played(monkeypatch, capsys, tmp_path):
@@ -38,3 +38,17 @@ def test_opening_scene_rendering_can_highlight_quotes(monkeypatch):
 
     assert "\033[38;5;186m" in rendered
     assert '"Something is wrong."' in rendered
+
+
+def test_run_initial_setup_returns_expected_tuple(monkeypatch):
+    monkeypatch.setattr("main.choose_game_mode", lambda: True)
+    monkeypatch.setattr("main.choose_spectator_settings", lambda: (12, 1.5))
+    monkeypatch.setattr("main.run_character_creation", lambda: "Aster")
+    seeded = {}
+    monkeypatch.setattr("main.choose_companion_count", lambda _max_count: 2)
+    monkeypatch.setattr("main.seed_npcs", lambda count: seeded.setdefault("count", count))
+
+    result = run_initial_setup()
+
+    assert result == (True, 12, 1.5, "Aster")
+    assert seeded["count"] == 2

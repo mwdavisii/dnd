@@ -43,6 +43,48 @@ def list_save_files() -> list[Path]:
         saves.append(legacy)
     return saves
 
+
+def list_player_templates(exclude_path: str | None = None) -> list[dict]:
+    templates = []
+    excluded = str(Path(exclude_path).resolve()) if exclude_path else None
+    for save_path in list_save_files():
+        resolved_path = str(save_path.resolve())
+        if excluded and resolved_path == excluded:
+            continue
+        try:
+            conn = sqlite3.connect(save_path)
+            conn.row_factory = sqlite3.Row
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(characters)").fetchall()}
+            if "characters" not in {
+                row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }:
+                conn.close()
+                continue
+            select_fields = ["name", "class_name", "stats"]
+            if "sex" in columns:
+                select_fields.append("sex")
+            if "pronouns" in columns:
+                select_fields.append("pronouns")
+            row = conn.execute(
+                f"SELECT {', '.join(select_fields)} FROM characters WHERE is_player = 1 LIMIT 1"
+            ).fetchone()
+            conn.close()
+            if not row:
+                continue
+            templates.append(
+                {
+                    "source_path": str(save_path),
+                    "name": row["name"],
+                    "class_name": row["class_name"],
+                    "stats": json.loads(row["stats"]),
+                    "sex": row["sex"] if "sex" in row.keys() else None,
+                    "pronouns": row["pronouns"] if "pronouns" in row.keys() else None,
+                }
+            )
+        except sqlite3.Error:
+            continue
+    return templates
+
 def slugify_save_name(name: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", name.strip().lower()).strip("_")
     return cleaned or datetime.now().strftime("save_%Y%m%d_%H%M%S")

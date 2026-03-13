@@ -1,6 +1,6 @@
 # D&D Text Adventure
 
-A text-based D&D learning game powered by a local Ollama model. You create a character, pick `0-5` AI companions, explore through free-form prompts, and use built-in commands for rules help, transparent combat math, and encounter tracking.
+A text-based D&D learning game powered by a local Ollama model. You create a character, pick `0-5` AI companions, explore alone or with a party through free-form prompts, and use built-in commands for rules help, transparent combat math, and encounter tracking.
 
 ## Features
 

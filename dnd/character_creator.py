@@ -2,7 +2,7 @@
 import json
 import os
 import math
-from .database import get_db_connection
+from .database import get_db_connection, list_player_templates
 from .data import (
     CLASS_DATA, BACKGROUND_DATA, STANDARD_ARRAY_BY_CLASS, DESCRIPTIVE_WORDS
 )
@@ -37,10 +37,100 @@ def _handle_spells(conn, char_id, class_info):
             cursor.execute("INSERT INTO character_spells (character_id, spell_id) VALUES (?, ?)", (char_id, spell_id))
         else: print(f"Warning: Spell '{spell_name}' not found in master spell list.")
 
+
+def _create_player_character(conn, char_name: str, chosen_class_name: str, stats: dict, sex: str | None = None, pronouns: str | None = None) -> int:
+    cursor = conn.cursor()
+    class_info = CLASS_DATA[chosen_class_name]
+    con_modifier = _get_modifier_from_score(stats["CON"])
+    max_hp = class_info['hp_base'] + con_modifier
+    l1_slots = class_info.get('spell_slots_l1', 0)
+    starting_gold = class_info.get('starting_gold', 0)
+    cursor.execute(
+        "INSERT INTO characters (name, class_name, sex, pronouns, hp_current, hp_max, stats, level, proficiency_bonus, hit_die_type, hit_dice_max, hit_dice_current, spell_slots_l1_max, spell_slots_l1_current, gold, is_player) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (char_name, chosen_class_name, sex or None, pronouns or None, max_hp, max_hp, json.dumps(stats), 1, 2, class_info['hit_die'], 1, 1, l1_slots, l1_slots, starting_gold, 1),
+    )
+    char_id = cursor.lastrowid
+    return char_id
+
+
+def _template_adjustment_summary(class_name: str, stats: dict) -> str:
+    base_stats = STANDARD_ARRAY_BY_CLASS[class_name]
+    adjustments = []
+    for ability in ["STR", "DEX", "CON", "INT", "WIS", "CHA"]:
+        delta = stats[ability] - base_stats[ability]
+        if delta:
+            adjustments.append(f"{ability} {delta:+}")
+    return ", ".join(adjustments) if adjustments else "standard array"
+
+
+def choose_character_origin() -> tuple[str, dict | None]:
+    templates = list_player_templates()
+    if not templates:
+        return ("fresh", None)
+
+    clear_screen()
+    print("--- Choose your hero ---")
+    print("1. Fresh character")
+    print("2. Clone existing character")
+    while True:
+        choice = input("> ").strip()
+        if choice == "1":
+            return ("fresh", None)
+        if choice == "2":
+            break
+
+    clear_screen()
+    print("--- Clone an existing character ---")
+    for index, template in enumerate(templates, start=1):
+        summary = _template_adjustment_summary(template["class_name"], template["stats"])
+        print(f"{index}. {template['name']} the {template['class_name']} | {summary}")
+    while True:
+        raw_choice = input("> ").strip()
+        try:
+            parsed_choice = int(raw_choice)
+            if 1 <= parsed_choice <= len(templates):
+                return ("clone", templates[parsed_choice - 1])
+        except ValueError:
+            continue
+
+
+def clone_character_from_template(template: dict) -> str | None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    clear_screen()
+    print(f"--- Clone {template['name']} the {template['class_name']} ---")
+    print(f"Build: {_template_adjustment_summary(template['class_name'], template['stats'])}")
+    default_name = template["name"]
+    char_name = input(f"Name for the cloned character [{default_name}] > ").strip() or default_name
+    try:
+        char_id = _create_player_character(
+            conn,
+            char_name,
+            template["class_name"],
+            template["stats"],
+            template.get("sex"),
+            template.get("pronouns"),
+        )
+        class_info = CLASS_DATA[template["class_name"]]
+        _handle_proficiencies(conn, char_id, class_info['proficiencies'], [])
+        _handle_spells(conn, char_id, class_info)
+        for item in class_info['inventory']:
+            cursor.execute("INSERT INTO inventory (character_id, item_name, quantity) VALUES (?, ?, ?)", (char_id, item, 1))
+        conn.commit()
+        conn.close()
+        clear_screen()
+        print(f"--- Character '{char_name}' cloned from {template['name']} the {template['class_name']}! ---")
+        input("\nPress Enter to begin your adventure...")
+        return char_name
+    except Exception as e:
+        print(f"\nAn error occurred while cloning your character: {e}")
+        conn.close()
+        return None
+
 def choose_companion_count(max_companions: int) -> int:
     clear_screen()
     print("--- Choose your party size ---")
-    print("0 companions: explore alone and watch the DM carry the full scene.")
+    print("0 companions: explore alone as the only party member.")
     print(f"1-{max_companions} companions: add AI party members you can talk to with 'ask <npc> ...'.")
     choice = None
     while choice is None:
@@ -61,7 +151,52 @@ def choose_identity_field(label: str, examples: str = "") -> str:
     prompt += " - press Enter to skip\n> "
     return input(prompt).strip()
 
+
+def choose_game_mode() -> bool:
+    clear_screen()
+    print("--- Choose your mode ---")
+    print("1. Play mode: you control the hero.")
+    print("2. Spectator mode: the hero is AI-controlled and you watch the story unfold.")
+    while True:
+        choice = input("> ").strip()
+        if choice == "1":
+            return False
+        if choice == "2":
+            return True
+
+
+def choose_spectator_settings() -> tuple[int | None, float]:
+    clear_screen()
+    print("--- Spectator Settings ---")
+    print("Choose how long the autoplay run should last and whether turns should pause automatically.")
+    while True:
+        raw_turns = input("Max number of turns (press Enter for unlimited) > ").strip()
+        if not raw_turns:
+            max_turns = None
+            break
+        try:
+            parsed_turns = int(raw_turns)
+            if parsed_turns > 0:
+                max_turns = parsed_turns
+                break
+        except ValueError:
+            continue
+    while True:
+        raw_pause = input("Pause between turns in seconds (0 for manual step-through) > ").strip()
+        if not raw_pause:
+            return (max_turns, 0.0)
+        try:
+            pause_seconds = float(raw_pause)
+            if pause_seconds >= 0:
+                return (max_turns, pause_seconds)
+        except ValueError:
+            continue
+
 def run_character_creation():
+    origin, template = choose_character_origin()
+    if origin == "clone" and template is not None:
+        return clone_character_from_template(template)
+
     conn = get_db_connection()
     cursor = conn.cursor()
     clear_screen()
@@ -107,11 +242,16 @@ def run_character_creation():
                 if plus_2 in eligible_abilities:
                     stats[plus_2] += 2
                     break
+                print(f"Please choose one of: {', '.join(eligible_abilities)}")
             while True:
                 plus_1 = input(f"Which different ability gets +1? ({', '.join(eligible_abilities)}) > ").upper()
-                if plus_1 in eligible_abilities and plus_1 != plus_2:
+                if plus_1 == plus_2:
+                    print(f"You already gave {plus_2} the +2 bonus. Choose a different ability.")
+                    continue
+                if plus_1 in eligible_abilities:
                     stats[plus_1] += 1
                     break
+                print(f"Please choose one of: {', '.join(eligible_abilities)}")
             break
         elif choice == '2':
             choices = []
@@ -119,21 +259,17 @@ def run_character_creation():
                 while True:
                     prompt = f"Choose your {'first' if i==0 else 'next'} +1 ability ({', '.join(eligible_abilities)}) > "
                     c = input(prompt).upper()
-                    if c in eligible_abilities and c not in choices:
+                    if c in choices:
+                        print(f"You already chose {c}. Pick a different ability.")
+                        continue
+                    if c in eligible_abilities:
                         stats[c] += 1
                         choices.append(c)
                         break
+                    print(f"Please choose one of: {', '.join(eligible_abilities)}")
             break
-    con_modifier = _get_modifier_from_score(stats["CON"])
-    max_hp = class_info['hp_base'] + con_modifier
-    l1_slots = class_info.get('spell_slots_l1', 0)
-    starting_gold = class_info.get('starting_gold', 0)
     try:
-        cursor.execute(
-            "INSERT INTO characters (name, class_name, sex, pronouns, hp_current, hp_max, stats, level, proficiency_bonus, hit_die_type, hit_dice_max, hit_dice_current, spell_slots_l1_max, spell_slots_l1_current, gold, is_player) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (char_name, chosen_class_name, sex or None, pronouns or None, max_hp, max_hp, json.dumps(stats), 1, 2, class_info['hit_die'], 1, 1, l1_slots, l1_slots, starting_gold, 1),
-        )
-        char_id = cursor.lastrowid
+        char_id = _create_player_character(conn, char_name, chosen_class_name, stats, sex, pronouns)
         all_profs = class_info['proficiencies'] + bg_info['proficiencies'] + bg_info['tools']
         _handle_proficiencies(conn, char_id, all_profs, [])
         _handle_spells(conn, char_id, class_info)

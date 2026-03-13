@@ -22,7 +22,7 @@ from dnd.database import (
     touch_save_accessed_at,
 )
 from dnd.character import CharacterSheet
-from dnd.character_creator import choose_companion_count, run_character_creation
+from dnd.character_creator import choose_companion_count, choose_game_mode, choose_spectator_settings, run_character_creation
 from dnd.data import CLASS_DATA
 from dnd.npc.prompts import NPC_ARCHETYPES
 
@@ -49,6 +49,7 @@ def setup_test_db(monkeypatch, tmp_path):
     inputs = iter(["Testus", "", "", "12", "3", "1", "INT", "CON", ""])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    monkeypatch.setattr('dnd.character_creator.list_player_templates', lambda: [])
     
     player_name = run_character_creation()
 
@@ -72,6 +73,7 @@ def setup_fighter_db(monkeypatch, tmp_path):
     inputs = iter(["FighterTest", "", "", "2", "4", "1", "STR", "CON", ""])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    monkeypatch.setattr('dnd.character_creator.list_player_templates', lambda: [])
     
     player_name = run_character_creation()
 
@@ -93,6 +95,7 @@ def setup_rogue_db(monkeypatch, tmp_path):
     inputs = iter(["RogueTest", "", "", "4", "2", "1", "DEX", "INT", ""])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    monkeypatch.setattr('dnd.character_creator.list_player_templates', lambda: [])
     
     player_name = run_character_creation()
 
@@ -114,6 +117,7 @@ def setup_barbarian_db(monkeypatch, tmp_path):
     inputs = iter(["BarbarianTest", "", "", "1", "4", "1", "STR", "CON", ""])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    monkeypatch.setattr('dnd.character_creator.list_player_templates', lambda: [])
     
     player_name = run_character_creation()
 
@@ -143,6 +147,7 @@ def test_character_creation_stores_optional_identity_fields(monkeypatch, tmp_pat
     inputs = iter(["Aster", "nonbinary", "they/them", "12", "3", "1", "INT", "WIS", ""])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    monkeypatch.setattr('dnd.character_creator.list_player_templates', lambda: [])
 
     player_name = run_character_creation()
     assert player_name == "Aster"
@@ -152,6 +157,56 @@ def test_character_creation_stores_optional_identity_fields(monkeypatch, tmp_pat
     assert sheet.pronouns == "they/them"
     assert "Sex: nonbinary" in sheet.get_prompt_summary()
     assert "Pronouns: they/them" in sheet.get_prompt_summary()
+
+
+def test_character_creation_reprompts_with_message_for_duplicate_plus_one(monkeypatch, tmp_path, capsys):
+    db_path = tmp_path / "duplicate_stat_choice.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+    initialize_database()
+    seed_spells()
+
+    inputs = iter(["Retry", "", "", "10", "3", "1", "CON", "CON", "WIS", ""])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
+    monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    monkeypatch.setattr('dnd.character_creator.list_player_templates', lambda: [])
+
+    run_character_creation()
+
+    out = capsys.readouterr().out
+    assert "You already gave CON the +2 bonus. Choose a different ability." in out
+
+
+def test_clone_character_from_template_creates_level_one_copy(monkeypatch, tmp_path):
+    db_path = tmp_path / "clone_template.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+    initialize_database()
+    seed_spells()
+    monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    monkeypatch.setattr(
+        'dnd.character_creator.list_player_templates',
+        lambda: [
+            {
+                "source_path": "/tmp/source.db",
+                "name": "Mike",
+                "class_name": "Bard",
+                "stats": {"STR": 8, "DEX": 16, "CON": 12, "INT": 14, "WIS": 10, "CHA": 15},
+                "sex": None,
+                "pronouns": "he/him",
+            }
+        ],
+    )
+    inputs = iter(["2", "1", "", ""])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
+
+    player_name = run_character_creation()
+
+    assert player_name == "Mike"
+    sheet = CharacterSheet(name="Mike")
+    assert sheet.class_name == "Bard"
+    assert sheet.level == 1
+    assert sheet.stats["DEX"] == 16
+    assert sheet.stats["INT"] == 14
+    assert sheet.pronouns == "he/him"
 
 def test_wizard_stat_calculation(setup_test_db):
     """Tests if stats are calculated correctly for our test Wizard."""
@@ -303,6 +358,26 @@ def test_choose_companion_count_accepts_zero(monkeypatch):
     inputs = iter(["0"])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
     assert choose_companion_count(5) == 0
+
+
+def test_choose_game_mode_spectator(monkeypatch):
+    monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    monkeypatch.setattr('builtins.input', lambda prompt: "2")
+    assert choose_game_mode() is True
+
+
+def test_choose_spectator_settings_with_values(monkeypatch):
+    monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    inputs = iter(["12", "1.5"])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
+    assert choose_spectator_settings() == (12, 1.5)
+
+
+def test_choose_spectator_settings_defaults(monkeypatch):
+    monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    inputs = iter(["", ""])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
+    assert choose_spectator_settings() == (None, 0.0)
 
 
 def test_choose_companion_count_retries_until_valid(monkeypatch):
