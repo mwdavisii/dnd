@@ -1,8 +1,11 @@
 import re
 import os
 import json
+import sys
 import time
+import builtins
 from pathlib import Path
+from datetime import datetime
 from dnd.dm.agent import DungeonMaster
 from dnd.npc.agent import NPCAgent
 from dnd.npc.prompts import NPC_ARCHETYPES
@@ -30,6 +33,7 @@ from dnd.character_creator import (
     clear_screen,
     choose_companion_count,
     choose_game_mode,
+    choose_session_round_budget,
     choose_spectator_settings,
 )
 from dnd.data import STORE_INVENTORY # Import STORE_INVENTORY
@@ -37,146 +41,264 @@ from dnd.cli import CommandHandler
 from dnd.completion import enable_command_completion
 from dnd.ui import apply_base_style, banner, highlight_quotes, prompt_marker, section, speaker, style, wrap_text
 
+
+class TeeStream:
+    def __init__(self, primary, transcript_file):
+        self.primary = primary
+        self.transcript_file = transcript_file
+
+    def write(self, data):
+        self.primary.write(data)
+        self.transcript_file.write(strip_ansi(data))
+        return len(data)
+
+    def flush(self):
+        self.primary.flush()
+        self.transcript_file.flush()
+
+    def isatty(self):
+        return self.primary.isatty()
+
+
+class TranscriptSession:
+    def __init__(self, transcript_path: Path, save_path: str):
+        self.transcript_path = transcript_path
+        self.save_path = save_path
+        self._file = None
+        self._stdout = None
+        self._stderr = None
+        self._input = None
+
+    def start(self):
+        self.transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self.transcript_path.open("a", encoding="utf-8")
+        self._file.write("# DnD Transcript\n\n")
+        self._file.write(f"- Save: `{format_save_label(Path(self.save_path))}`\n")
+        self._file.write(f"- Started: `{datetime.now().strftime('%Y-%m-%d %I:%M %p')}`\n\n")
+        self._file.write("```text\n")
+        self._stdout = sys.stdout
+        self._stderr = sys.stderr
+        self._input = builtins.input
+        sys.stdout = TeeStream(self._stdout, self._file)
+        sys.stderr = TeeStream(self._stderr, self._file)
+
+        def logged_input(prompt=""):
+            response = self._input(prompt)
+            self._file.write(f"{strip_ansi(response)}\n")
+            self._file.flush()
+            return response
+
+        builtins.input = logged_input
+        return self
+
+    def stop(self):
+        if self._stdout is not None:
+            sys.stdout = self._stdout
+        if self._stderr is not None:
+            sys.stderr = self._stderr
+        if self._input is not None:
+            builtins.input = self._input
+        if self._file is not None:
+            self._file.write("\n```\n")
+            self._file.flush()
+            self._file.close()
+
+
+def should_wait_before_spectator_turn(actor_type: str) -> bool:
+    return actor_type != "player"
+
+
+def derive_story_phase(current_round: int, target_rounds: int) -> str:
+    if target_rounds <= 1:
+        return "resolution"
+    progress_ratio = current_round / target_rounds
+    if progress_ratio <= 0.25:
+        return "opening"
+    if progress_ratio <= 0.70:
+        return "midgame"
+    if progress_ratio <= 0.90:
+        return "climax"
+    return "resolution"
+
+
+def create_transcript_path(save_path: str, now: datetime | None = None) -> Path:
+    timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    save_label = format_save_label(Path(save_path))
+    return Path("logs") / f"{save_label}_{timestamp}.md"
+
+
+def strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+def choose_transcript_logging(save_path: str) -> Path | None:
+    choice = input(f"{style('Save a transcript for this session?', 'silver')} {style('[y/N]', 'cyan')} {prompt_marker()}").strip().lower()
+    if choice not in {"y", "yes"}:
+        return None
+    return create_transcript_path(save_path)
+
+
 def main():
     """Main function to run the D&D game."""
     
     player_name = "Player" # Default name
     session_id = None
     spectator_mode = False
-    spectator_max_turns = None
+    target_rounds = None
     spectator_pause_seconds = 0.0
+    setup_completed = False
+    transcript_session = None
 
     # --- Game Setup ---
     selected_save = choose_save_file()
-    set_db_file(selected_save)
-    is_new_save = not os.path.exists(selected_save)
-    initialize_database()
-    touch_save_accessed_at()
+    transcript_path = choose_transcript_logging(selected_save)
+    if transcript_path is not None:
+        transcript_session = TranscriptSession(transcript_path, selected_save).start()
+        print(style(f"Transcript logging enabled: {transcript_path}", "green", bold=True))
+    try:
+        set_db_file(selected_save)
+        is_new_save = not os.path.exists(selected_save)
+        initialize_database()
+        touch_save_accessed_at()
 
-    if is_new_save:
-        seed_spells()
-        session_id = create_game_session()
-        spectator_mode, spectator_max_turns, spectator_pause_seconds, player_name = run_initial_setup()
-    else:
-        session_id = ensure_game_session()
-        conn = get_db_connection()
-        player_row = conn.execute("SELECT name FROM characters WHERE is_player = 1").fetchone()
-        conn.close()
-        if player_row is None:
-            print(style("This save has no finished player setup yet. Resuming setup now.", "silver", dim=True, italic=True))
+        if is_new_save:
             seed_spells()
-            spectator_mode, spectator_max_turns, spectator_pause_seconds, player_name = run_initial_setup()
+            session_id = create_game_session()
+            spectator_mode, target_rounds, spectator_pause_seconds, player_name = run_initial_setup()
+            setup_completed = True
+        else:
+            session_id = ensure_game_session()
+            conn = get_db_connection()
+            player_row = conn.execute("SELECT name FROM characters WHERE is_player = 1").fetchone()
+            conn.close()
+            if player_row is None:
+                print(style("This save has no finished player setup yet. Resuming setup now.", "silver", dim=True, italic=True))
+                seed_spells()
+                spectator_mode, target_rounds, spectator_pause_seconds, player_name = run_initial_setup()
+                setup_completed = True
 
-    # --- Dynamic Character Loading ---
-    conn = get_db_connection()
-    # Get player name if not already set from character creation
-    if player_name == "Player":
-        player_row = conn.execute("SELECT name FROM characters WHERE is_player = 1").fetchone()
-        if player_row is None:
-            raise RuntimeError("No player character exists for this save. Character setup may not have completed.")
-        player_name = player_row['name']
+        # --- Dynamic Character Loading ---
+        conn = get_db_connection()
+        # Get player name if not already set from character creation
+        if player_name == "Player":
+            player_row = conn.execute("SELECT name FROM characters WHERE is_player = 1").fetchone()
+            if player_row is None:
+                raise RuntimeError("No player character exists for this save. Character setup may not have completed.")
+            player_name = player_row['name']
 
-    npc_names = [row['name'] for row in conn.execute("SELECT name FROM characters WHERE is_player = 0").fetchall()]
-    conn.close()
+        npc_names = [row['name'] for row in conn.execute("SELECT name FROM characters WHERE is_player = 0").fetchall()]
+        conn.close()
 
-    player_sheet = CharacterSheet(name=player_name)
-    archetype_map = {archetype['name']: archetype for archetype in NPC_ARCHETYPES}
-    
-    character_sheets = { player_name.lower(): player_sheet }
-    npcs = {}
-    companion_descriptions = []
+        player_sheet = CharacterSheet(name=player_name)
+        archetype_map = {archetype['name']: archetype for archetype in NPC_ARCHETYPES}
+        
+        character_sheets = { player_name.lower(): player_sheet }
+        npcs = {}
+        companion_descriptions = []
 
-    for name in npc_names:
-        if name in archetype_map:
-            archetype = archetype_map[name]
-            character_sheets[name.lower()] = CharacterSheet(name=name)
-            npcs[name.lower()] = NPCAgent(
-                name=archetype['name'],
-                class_name=archetype['class'],
-                system_prompt=archetype['system_prompt'],
-                session_id=session_id,
-            )
-            companion_descriptions.append(f"{archetype['name']} the {archetype['class'].lower()}")
-    
-    dm = DungeonMaster(session_id=session_id)
-    dm.update_world_state("player_name", player_name)
-    if is_new_save:
-        dm.update_world_state("spectator_mode", spectator_mode)
-        dm.update_world_state("spectator_max_turns", spectator_max_turns)
-        dm.update_world_state("spectator_pause_seconds", spectator_pause_seconds)
-    else:
-        spectator_mode = bool(dm.world_state.get("spectator_mode", False))
-        spectator_max_turns = dm.world_state.get("spectator_max_turns")
-        spectator_pause_seconds = float(dm.world_state.get("spectator_pause_seconds", 0.0) or 0.0)
-    handler = CommandHandler(player_sheet, character_sheets, npcs, dm)
-    enable_command_completion(handler)
-    player_agent = AutoPlayerAgent(player_sheet) if spectator_mode else None
-    spectator_turns_taken = 0
+        for name in npc_names:
+            if name in archetype_map:
+                archetype = archetype_map[name]
+                character_sheets[name.lower()] = CharacterSheet(name=name)
+                npcs[name.lower()] = NPCAgent(
+                    name=archetype['name'],
+                    class_name=archetype['class'],
+                    system_prompt=archetype['system_prompt'],
+                    session_id=session_id,
+                )
+                companion_descriptions.append(f"{archetype['name']} the {archetype['class'].lower()}")
+        
+        dm = DungeonMaster(session_id=session_id)
+        dm.update_world_state("player_name", player_name)
+        if setup_completed:
+            dm.update_world_state("spectator_mode", spectator_mode)
+            dm.update_world_state("target_rounds", target_rounds)
+            dm.update_world_state("spectator_pause_seconds", spectator_pause_seconds)
+        else:
+            spectator_mode = bool(dm.world_state.get("spectator_mode", False))
+            target_rounds = dm.world_state.get("target_rounds")
+            if target_rounds is None:
+                target_rounds = dm.world_state.get("spectator_max_rounds")
+            if target_rounds is None:
+                target_rounds = dm.world_state.get("spectator_max_turns")
+            if target_rounds is None:
+                target_rounds = 20
+                dm.update_world_state("target_rounds", target_rounds)
+            spectator_pause_seconds = float(dm.world_state.get("spectator_pause_seconds", 0.0) or 0.0)
+        handler = CommandHandler(player_sheet, character_sheets, npcs, dm)
+        enable_command_completion(handler)
+        player_agent = AutoPlayerAgent(player_sheet) if spectator_mode else None
 
-    # --- Game Start ---
-    clear_screen()
-    print(banner("D&D Text Adventure"))
-    print(style("Welcome to your D&D adventure!", "gold", bold=True))
-    print(f"{style('Hero', 'cyan', bold=True)} {player_name}")
-    print(f"{section('Character Sheet')}\n{player_sheet}")
-    if companion_descriptions:
-        print(f"{style('Companions', 'magenta', bold=True)} {', and '.join(companion_descriptions)}.")
-    else:
-        print(style("You begin this adventure without companions.", "gray"))
-    if spectator_mode:
-        mode_text = "manual step-through" if spectator_pause_seconds == 0 else f"{spectator_pause_seconds:g}s autoplay"
-        limit_text = "unlimited turns" if spectator_max_turns is None else f"{spectator_max_turns} turns max"
-        print(style(f"Spectator mode is on: {mode_text}, {limit_text}.", "silver", dim=True, italic=True))
-    print(style("─" * 40, "gray"))
-    print(apply_base_style(highlight_quotes(wrap_text(dm.generate_opening_scene(player_sheet, npcs))), "parchment"))
-    handler.print_turn_status()
-    handler.print_suggested_actions()
+        # --- Game Start ---
+        clear_screen()
+        print(banner("D&D Text Adventure"))
+        print(style("Welcome to your D&D adventure!", "gold", bold=True))
+        print(f"{style('Hero', 'cyan', bold=True)} {player_name}")
+        print(f"{section('Character Sheet')}\n{player_sheet}")
+        if companion_descriptions:
+            print(f"{style('Companions', 'magenta', bold=True)} {', and '.join(companion_descriptions)}.")
+        else:
+            print(style("You begin this adventure without companions.", "gray"))
+        if spectator_mode:
+            mode_text = "manual step-through" if spectator_pause_seconds == 0 else f"{spectator_pause_seconds:g}s autoplay"
+            limit_text = f"{target_rounds} rounds max"
+            print(style(f"Spectator mode is on: {mode_text}, {limit_text}.", "silver", dim=True, italic=True))
+        else:
+            print(style(f"Session length: {target_rounds} rounds.", "silver", dim=True, italic=True))
+        print(style("─" * 40, "gray"))
+        print(apply_base_style(highlight_quotes(wrap_text(dm.generate_opening_scene(player_sheet, npcs))), "parchment"))
+        handler.print_turn_status()
+        handler.print_suggested_actions()
 
-    # --- Main Game Loop ---
-    while True:
-        try:
-            if spectator_mode:
-                if spectator_max_turns is not None and spectator_turns_taken >= spectator_max_turns:
-                    print(style("Spectator run finished: reached the configured turn limit.", "silver", dim=True, italic=True))
-                    break
-                if spectator_pause_seconds == 0:
-                    advance = input(f"\n{style('Spectator mode: press Enter for next turn or type quit', 'silver', dim=True, italic=True)} {prompt_marker()}")
-                    if advance.strip().lower() in ["quit", "exit"]:
-                        print(style("The adventure ends... for now.", "red", bold=True))
+        # --- Main Game Loop ---
+        while True:
+            try:
+                if spectator_mode:
+                    if handler.round_number > target_rounds:
+                        print(style("Spectator run finished: reached the configured round limit.", "silver", dim=True, italic=True))
                         break
-                else:
-                    print(style(f"Spectator mode: next turn in {spectator_pause_seconds:g}s", "silver", dim=True, italic=True))
-                    time.sleep(spectator_pause_seconds)
-                action = run_spectator_turn(handler, dm, player_sheet, player_agent)
-                spectator_turns_taken += 1
-                if action is None:
+                    actor = handler.current_turn_actor
+                    should_pause = should_wait_before_spectator_turn(actor["type"])
+                    if spectator_pause_seconds == 0 and should_pause:
+                        advance = input(f"\n{style('Spectator mode: press Enter for next turn or type quit', 'silver', dim=True, italic=True)} {prompt_marker()}")
+                        if advance.strip().lower() in ["quit", "exit"]:
+                            print(style("The adventure ends... for now.", "red", bold=True))
+                            break
+                    elif spectator_pause_seconds > 0 and should_pause:
+                        print(style(f"Spectator mode: next turn in {spectator_pause_seconds:g}s", "silver", dim=True, italic=True))
+                        time.sleep(spectator_pause_seconds)
+                    action = run_spectator_turn(handler, dm, player_sheet, player_agent)
+                    if action is None:
+                        continue
+                    if action:
+                        process_dm_turn(action, dm, npcs, player_sheet, character_sheets, handler)
                     continue
-                if action:
-                    process_dm_turn(action, dm, npcs, player_sheet, character_sheets, handler)
-                continue
 
-            user_input = input(f"\n{prompt_marker()}")
-            if user_input.lower() in ["quit", "exit"]:
-                print(style("The adventure ends... for now.", "red", bold=True))
+                user_input = input(f"\n{prompt_marker()}")
+                if user_input.lower() in ["quit", "exit"]:
+                    print(style("The adventure ends... for now.", "red", bold=True))
+                    break
+
+                if user_input.lower().startswith("/") or user_input.lower().startswith("ask "):
+                    skip_dm, user_input = handler.handle(user_input)
+                    if skip_dm:
+                        continue
+                    if not user_input:
+                        continue
+                elif not handler.player_can_act():
+                    continue
+
+                process_dm_turn(user_input, dm, npcs, player_sheet, character_sheets, handler)
+
+
+            except (KeyboardInterrupt, EOFError):
+                print(f"\n{style('The adventure ends... for now.', 'red', bold=True)}")
                 break
 
-            if user_input.lower().startswith("/") or user_input.lower().startswith("ask "):
-                skip_dm, user_input = handler.handle(user_input)
-                if skip_dm:
-                    continue
-                if not user_input:
-                    continue
-            elif not handler.player_can_act():
-                continue
-
-            process_dm_turn(user_input, dm, npcs, player_sheet, character_sheets, handler)
-
-
-        except (KeyboardInterrupt, EOFError):
-            print(f"\n{style('The adventure ends... for now.', 'red', bold=True)}")
-            break
-
-        update_condition_durations()
+            update_condition_durations()
+    finally:
+        if transcript_session is not None:
+            transcript_session.stop()
 
 def update_condition_durations():
     """Updates the duration of conditions for all characters."""
@@ -268,16 +390,16 @@ def run_spectator_turn(handler, dm, player_sheet, player_agent) -> str | None:
         return None
     return prompt
 
-def run_initial_setup() -> tuple[bool, int | None, float, str]:
+def run_initial_setup() -> tuple[bool, int, float, str]:
     spectator_mode = choose_game_mode()
-    spectator_max_turns = None
+    target_rounds = choose_session_round_budget()
     spectator_pause_seconds = 0.0
     if spectator_mode:
-        spectator_max_turns, spectator_pause_seconds = choose_spectator_settings()
+        spectator_pause_seconds = choose_spectator_settings()
     player_name = run_character_creation()
     companion_count = choose_companion_count(len(NPC_ARCHETYPES))
     seed_npcs(companion_count)
-    return spectator_mode, spectator_max_turns, spectator_pause_seconds, player_name
+    return spectator_mode, target_rounds, spectator_pause_seconds, player_name
 
 
 def choose_save_file() -> str:

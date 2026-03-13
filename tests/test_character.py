@@ -22,7 +22,13 @@ from dnd.database import (
     touch_save_accessed_at,
 )
 from dnd.character import CharacterSheet
-from dnd.character_creator import choose_companion_count, choose_game_mode, choose_spectator_settings, run_character_creation
+from dnd.character_creator import (
+    choose_companion_count,
+    choose_game_mode,
+    choose_session_round_budget,
+    choose_spectator_settings,
+    run_character_creation,
+)
 from dnd.data import CLASS_DATA
 from dnd.npc.prompts import NPC_ARCHETYPES
 
@@ -360,6 +366,19 @@ def test_choose_companion_count_accepts_zero(monkeypatch):
     assert choose_companion_count(5) == 0
 
 
+def test_choose_session_round_budget_medium(monkeypatch):
+    monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    monkeypatch.setattr('builtins.input', lambda prompt: "2")
+    assert choose_session_round_budget() == 20
+
+
+def test_choose_session_round_budget_custom(monkeypatch):
+    monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    inputs = iter(["4", "15"])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
+    assert choose_session_round_budget() == 15
+
+
 def test_choose_game_mode_spectator(monkeypatch):
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
     monkeypatch.setattr('builtins.input', lambda prompt: "2")
@@ -368,16 +387,16 @@ def test_choose_game_mode_spectator(monkeypatch):
 
 def test_choose_spectator_settings_with_values(monkeypatch):
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
-    inputs = iter(["12", "1.5"])
+    inputs = iter(["1.5"])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
-    assert choose_spectator_settings() == (12, 1.5)
+    assert choose_spectator_settings() == 1.5
 
 
 def test_choose_spectator_settings_defaults(monkeypatch):
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
-    inputs = iter(["", ""])
+    inputs = iter([""])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
-    assert choose_spectator_settings() == (None, 0.0)
+    assert choose_spectator_settings() == 0.0
 
 
 def test_choose_companion_count_retries_until_valid(monkeypatch):

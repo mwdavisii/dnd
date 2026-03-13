@@ -1,6 +1,15 @@
 from pathlib import Path
 
-from main import choose_save_file, run_initial_setup
+from datetime import datetime
+
+from main import (
+    choose_save_file,
+    create_transcript_path,
+    derive_story_phase,
+    run_initial_setup,
+    should_wait_before_spectator_turn,
+    strip_ansi,
+)
 
 
 def test_choose_save_file_shows_created_and_last_played(monkeypatch, capsys, tmp_path):
@@ -42,7 +51,8 @@ def test_opening_scene_rendering_can_highlight_quotes(monkeypatch):
 
 def test_run_initial_setup_returns_expected_tuple(monkeypatch):
     monkeypatch.setattr("main.choose_game_mode", lambda: True)
-    monkeypatch.setattr("main.choose_spectator_settings", lambda: (12, 1.5))
+    monkeypatch.setattr("main.choose_session_round_budget", lambda: 12)
+    monkeypatch.setattr("main.choose_spectator_settings", lambda: 1.5)
     monkeypatch.setattr("main.run_character_creation", lambda: "Aster")
     seeded = {}
     monkeypatch.setattr("main.choose_companion_count", lambda _max_count: 2)
@@ -52,3 +62,26 @@ def test_run_initial_setup_returns_expected_tuple(monkeypatch):
 
     assert result == (True, 12, 1.5, "Aster")
     assert seeded["count"] == 2
+
+
+def test_should_wait_before_spectator_turn_skips_player_turns():
+    assert should_wait_before_spectator_turn("player") is False
+    assert should_wait_before_spectator_turn("companion") is True
+    assert should_wait_before_spectator_turn("enemy") is True
+
+
+def test_derive_story_phase_uses_round_budget():
+    assert derive_story_phase(1, 20) == "opening"
+    assert derive_story_phase(8, 20) == "midgame"
+    assert derive_story_phase(16, 20) == "climax"
+    assert derive_story_phase(19, 20) == "resolution"
+
+
+def test_create_transcript_path_uses_markdown_and_save_label():
+    transcript_path = create_transcript_path("/tmp/my_campaign.db", now=datetime(2026, 3, 13, 9, 45, 0))
+
+    assert transcript_path == Path("logs/my_campaign_20260313_094500.md")
+
+
+def test_strip_ansi_removes_terminal_sequences():
+    assert strip_ansi("\033[31mDanger\033[0m") == "Danger"

@@ -185,3 +185,27 @@ def test_generate_opening_scene_prints_thinking_message(monkeypatch, dm_db, play
         dm.generate_opening_scene(player_sheet, {})
 
     assert "Generating opening scene" in capsys.readouterr().out
+
+
+def test_generate_response_includes_pacing_context(monkeypatch, dm_db, player_sheet):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("target_rounds", 20)
+    dm.update_world_state("current_round", 8)
+    dm.update_world_state("remaining_rounds", 12)
+    dm.update_world_state("story_phase", "midgame")
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.iter_lines.return_value = [b'{"response":"The trail bends toward the ruins.","done":false}', b'{"done":true}']
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response) as mock_post:
+        dm.generate_response("Look for tracks.", player_sheet, {})
+
+    prompt = mock_post.call_args.kwargs["json"]["prompt"]
+    assert "Session Pacing:" in prompt
+    assert "- Current round: 8" in prompt
+    assert "- Target rounds: 20" in prompt
+    assert "- Remaining rounds: 12" in prompt
+    assert "- Story phase: midgame" in prompt

@@ -165,30 +165,44 @@ def choose_game_mode() -> bool:
             return True
 
 
-def choose_spectator_settings() -> tuple[int | None, float]:
+def choose_session_round_budget() -> int:
+    clear_screen()
+    print("--- Session Length ---")
+    print("1. Short session (10 rounds)")
+    print("2. Medium session (20 rounds)")
+    print("3. Long session (30 rounds)")
+    print("4. Custom round budget")
+    while True:
+        choice = input("> ").strip()
+        if choice == "1":
+            return 10
+        if choice == "2":
+            return 20
+        if choice == "3":
+            return 30
+        if choice == "4":
+            while True:
+                raw_rounds = input("Enter the number of rounds for this session > ").strip()
+                try:
+                    parsed_rounds = int(raw_rounds)
+                    if parsed_rounds > 0:
+                        return parsed_rounds
+                except ValueError:
+                    continue
+
+
+def choose_spectator_settings() -> float:
     clear_screen()
     print("--- Spectator Settings ---")
-    print("Choose how long the autoplay run should last and whether turns should pause automatically.")
-    while True:
-        raw_turns = input("Max number of turns (press Enter for unlimited) > ").strip()
-        if not raw_turns:
-            max_turns = None
-            break
-        try:
-            parsed_turns = int(raw_turns)
-            if parsed_turns > 0:
-                max_turns = parsed_turns
-                break
-        except ValueError:
-            continue
+    print("Choose whether turns should pause automatically during the spectator run.")
     while True:
         raw_pause = input("Pause between turns in seconds (0 for manual step-through) > ").strip()
         if not raw_pause:
-            return (max_turns, 0.0)
+            return 0.0
         try:
             pause_seconds = float(raw_pause)
             if pause_seconds >= 0:
-                return (max_turns, pause_seconds)
+                return pause_seconds
         except ValueError:
             continue
 

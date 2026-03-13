@@ -45,6 +45,7 @@ class DungeonMaster:
         full_prompt = (
             f"{player_sheet.get_prompt_summary()}\n\n"
             f"Companions:\n" + "\n".join(npc_summaries) + "\n\n"
+            f"{self._pacing_context()}\n\n"
             f"{OPENING_SCENE_PROMPT}"
         )
 
@@ -90,6 +91,7 @@ class DungeonMaster:
         full_prompt = (
             f"{player_sheet.get_prompt_summary()}\n\n"
             f"Your Companions:\n" + "\n".join(npc_summaries) + "\n\n"
+            f"{self._pacing_context()}\n\n"
             f"Current World State:\n{world_state_summary}\n\n"
             "Here is the story so far:\n"
             f"{self._format_history()}"
@@ -134,6 +136,21 @@ class DungeonMaster:
 
     def _format_history(self):
         return "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in self.history])
+
+    def _pacing_context(self) -> str:
+        target_rounds = int(self.world_state.get("target_rounds", 0) or 0)
+        current_round = int(self.world_state.get("current_round", 1) or 1)
+        remaining_rounds = int(self.world_state.get("remaining_rounds", max(target_rounds - current_round, 0)) or 0)
+        story_phase = self.world_state.get("story_phase", "opening")
+        if target_rounds <= 0:
+            return "Session pacing is not configured."
+        return (
+            "Session Pacing:\n"
+            f"- Current round: {current_round}\n"
+            f"- Target rounds: {target_rounds}\n"
+            f"- Remaining rounds: {remaining_rounds}\n"
+            f"- Story phase: {story_phase}"
+        )
 
     def _extract_structured_updates(self, response: str) -> str:
         encounter_match = re.search(r'<encounter enemies="([^"]+)"\s*/>', response)

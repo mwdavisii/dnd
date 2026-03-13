@@ -458,7 +458,7 @@ def test_worldstate_no_args_prints_state(handler, dm, capsys):
 def test_worldstate_set_key(handler, dm):
     skip_dm, result = handler.handle("/worldstate location dungeon")
     assert skip_dm is True
-    dm.update_world_state.assert_called_once_with("location", "dungeon")
+    assert ("location", "dungeon") in [call.args for call in dm.update_world_state.call_args_list]
 
 
 # ---------------------------------------------------------------------------

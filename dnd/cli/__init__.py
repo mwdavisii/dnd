@@ -51,8 +51,9 @@ class CommandHandler:
         self.teaching_mode = False
         self.turn_order = [self.player_sheet.name] + [npc.name for npc in self.npcs.values()]
         self.turn_index = 0
-        self.round_number = 1
+        self.round_number = int(self.dm.world_state.get("current_round", 1) or 1)
         self.encounter = None
+        self._sync_story_pacing()
 
     def handle(self, user_input: str) -> tuple[bool, str]:
         if user_input.lower().startswith("ask "):
@@ -844,7 +845,25 @@ class CommandHandler:
         self.turn_index = (self.turn_index + 1) % len(self.turn_order)
         if self.turn_index == 0 and previous_index != 0:
             self.round_number += 1
+            self._sync_story_pacing()
         return self.current_actor_name
+
+    def _sync_story_pacing(self) -> None:
+        target_rounds = int(self.dm.world_state.get("target_rounds", 0) or 0)
+        self.dm.update_world_state("current_round", self.round_number)
+        if target_rounds > 0:
+            remaining_rounds = max(target_rounds - self.round_number, 0)
+            self.dm.update_world_state("remaining_rounds", remaining_rounds)
+            progress_ratio = self.round_number / target_rounds
+            if progress_ratio <= 0.25:
+                story_phase = "opening"
+            elif progress_ratio <= 0.70:
+                story_phase = "midgame"
+            elif progress_ratio <= 0.90:
+                story_phase = "climax"
+            else:
+                story_phase = "resolution"
+            self.dm.update_world_state("story_phase", story_phase)
 
     def print_turn_status(self) -> None:
         if self.encounter:
