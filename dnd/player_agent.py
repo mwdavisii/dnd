@@ -1,9 +1,9 @@
 import os
-import re
 import requests
 from dotenv import load_dotenv
 
 from dnd.ui import thinking_message
+from dnd.spectator import default_fallback_action, format_turn_context, validate_turn_output
 
 load_dotenv()
 
@@ -16,15 +16,31 @@ class AutoPlayerAgent:
         if not self.ollama_host or not self.ollama_model:
             raise ValueError("OLLAMA_HOST and OLLAMA_MODEL must be set in .env file")
 
-    def generate_action(self, scene_summary: str, recent_party_actions: list[str]) -> str:
+    def generate_action(
+        self,
+        scene_summary: str,
+        recent_party_actions: list[str],
+        turn_context: dict | None = None,
+    ) -> str:
+        context_block = format_turn_context(turn_context) if turn_context else scene_summary
+        beat_goal = (turn_context or {}).get("current_beat_goal", "")
+        beat_goal_line = f"Current goal: {beat_goal}\n" if beat_goal else ""
+
         prompt = (
             "You are controlling the player character in spectator mode.\n"
             "Choose one short, concrete action that moves the scene forward.\n"
             "Respond in plain English only.\n"
             "Use ASCII characters only.\n"
-            "Stay in character. Do not explain your reasoning. Do not write multiple options.\n\n"
+            "Stay in character. Do not explain your reasoning. Do not write multiple options.\n"
+            "Do not narrate outcomes, other speakers, or future turns.\n"
+            "Do not include labels such as DM:, Assistant:, Outcome:, or your own name.\n\n"
+            f"{beat_goal_line}"
+            "Prefer actions that create progress: question, inspect, advance, rescue, confront, cast, strike, or seize evidence.\n"
+            "Avoid repeating the same cautious movement unless immediate danger clearly forces it.\n"
+            "When scene momentum is slow or stalled, do something that reveals information or forces a change.\n"
+            "When only a few rounds remain, choose a decisive action instead of another setup action.\n\n"
             f"{self.player_sheet.get_prompt_summary()}\n"
-            f"Scene summary:\n{scene_summary}\n\n"
+            f"Turn context:\n{context_block}\n\n"
             "Recent party actions:\n"
             + ("\n".join(f"- {action}" for action in recent_party_actions[-3:]) if recent_party_actions else "- None recorded.")
         )
@@ -41,16 +57,11 @@ class AutoPlayerAgent:
         )
         response.raise_for_status()
         payload = response.json()
-        return self._normalize_action(payload.get("response", "").strip())
-
-    def _normalize_action(self, action: str) -> str:
-        if not action:
-            return "Look around carefully."
-
-        cleaned = " ".join(action.split())
-        if self._contains_non_latin_script(cleaned):
-            return "Check your gear and scan the area carefully."
-        return cleaned
-
-    def _contains_non_latin_script(self, text: str) -> bool:
-        return bool(re.search(r"[\u0400-\u052F\u0590-\u05FF\u0600-\u06FF\u0900-\u0D7F\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]", text))
+        return validate_turn_output(
+            payload.get("response", "").strip(),
+            actor_name=self.player_sheet.name,
+            actor_type="player",
+            recent_party_actions=recent_party_actions,
+            turn_context=turn_context,
+            fallback=default_fallback_action(self.player_sheet.name, "player"),
+        )
