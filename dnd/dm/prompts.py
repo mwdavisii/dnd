@@ -72,6 +72,8 @@ Opening scene:
 
 Generate a 4-beat story arc that fits naturally from this opening. Also extract key world state.
 
+Note: "objective" is the player's first actionable step (mirrors arc.hook.goal). "story_hook" is the underlying mystery that spans all four beats.
+
 Respond with ONLY valid JSON — no explanation, no markdown fences, no extra text:
 
 {{
@@ -87,18 +89,18 @@ Respond with ONLY valid JSON — no explanation, no markdown fences, no extra te
     }},
     "complication": {{
       "goal": "How the party must respond as the situation escalates",
-      "key_npcs": [],
+      "key_npcs": ["NPC names relevant to this beat, or empty array if none"],
       "success_condition": "Specific observable event that means this beat is complete"
     }},
     "climax": {{
       "goal": "The decisive action that resolves or confronts the central conflict",
-      "key_npcs": [],
+      "key_npcs": ["NPC names relevant to this beat, or empty array if none"],
       "success_condition": "Specific observable event that means this beat is complete"
     }},
     "resolution": {{
       "goal": "Wrap up the conflict and show its consequences",
-      "key_npcs": [],
-      "success_condition": "The story has reached a clear ending"
+      "key_npcs": ["NPC names relevant to this beat, or empty array if none"],
+      "success_condition": "Specific observable event that marks the story's conclusion"
     }}
   }}
 }}
@@ -113,6 +115,6 @@ Current beat success condition:
 What just happened in the story:
 {dm_response}
 
-Did the party make meaningful, concrete progress toward the success condition?
+Has the success condition been fully met based on what happened?
 Answer with only YES or NO.
 """
