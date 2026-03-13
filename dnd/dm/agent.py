@@ -102,6 +102,10 @@ class DungeonMaster:
             json_match = re.search(r'\{.*\}', raw, re.DOTALL)
             arc_data = json.loads(json_match.group() if json_match else raw)
 
+            if not arc_data.get("arc"):
+                self._set_fallback_arc()
+                return
+
             self.update_world_state("story_arc", arc_data.get("arc", {}))
             self.update_world_state("current_beat", "hook")
             if arc_data.get("objective"):

@@ -344,6 +344,24 @@ def test_generate_arc_falls_back_on_bad_json(monkeypatch, dm_db):
     assert "resolution" in dm.world_state["story_arc"]
 
 
+def test_generate_arc_falls_back_on_missing_arc_key(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": '{"objective": "Do something"}'}  # valid JSON, no "arc" key
+    fake_response.raise_for_status.return_value = None
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        dm.generate_arc("You see a cloaked figure leaving the inn.")
+
+    # Should fall back to a valid 4-beat arc
+    assert dm.world_state["current_beat"] == "hook"
+    assert "hook" in dm.world_state["story_arc"]
+    assert "complication" in dm.world_state["story_arc"]
+
+
 def test_generate_arc_skips_if_arc_already_exists(monkeypatch, dm_db):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")
