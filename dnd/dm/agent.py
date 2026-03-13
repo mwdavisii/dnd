@@ -4,10 +4,11 @@ import json
 import re
 from dotenv import load_dotenv
 from collections import Counter
-from dnd.dm.prompts import OPENING_SCENE_PROMPT, SYSTEM_PROMPT
+from dnd.dm.prompts import ARC_GENERATION_PROMPT, BEAT_EVALUATION_PROMPT, OPENING_SCENE_PROMPT, SYSTEM_PROMPT
 from dnd.character import CharacterSheet
 from dnd.database import load_world_state, save_world_state
 from dnd.data import MONSTER_DATA
+from dnd.spectator import format_turn_context, momentum_label, phase_goal
 from dnd.ui import apply_base_style, highlight_quotes, style, thinking_message, wrap_text
 
 load_dotenv()
@@ -79,22 +80,87 @@ class DungeonMaster:
             self.add_history("assistant", fallback)
             return fallback
 
+    def generate_arc(self, opening_scene: str) -> None:
+        """Generate a 4-beat story arc from the opening scene. Skips if arc already exists (saved game)."""
+        if self.world_state.get("story_arc"):
+            return
+
+        prompt = ARC_GENERATION_PROMPT.format(opening_scene=opening_scene)
+        try:
+            print(thinking_message("Generating story arc"))
+            response = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                },
+                timeout=(5, 120),
+            )
+            response.raise_for_status()
+            raw = response.json().get("response", "").strip()
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            arc_data = json.loads(json_match.group() if json_match else raw)
+
+            self.update_world_state("story_arc", arc_data.get("arc", {}))
+            self.update_world_state("current_beat", "hook")
+            if arc_data.get("objective"):
+                self.update_world_state("objective", arc_data["objective"])
+            if arc_data.get("notable_npcs"):
+                self.update_world_state("notable_npcs", arc_data["notable_npcs"])
+            if arc_data.get("nearby_locations"):
+                self.update_world_state("nearby_locations", arc_data["nearby_locations"])
+            if arc_data.get("story_hook"):
+                self.update_world_state("story_hook", arc_data["story_hook"])
+        except (requests.exceptions.RequestException, json.JSONDecodeError, AttributeError):
+            self._set_fallback_arc()
+
+    def _set_fallback_arc(self) -> None:
+        """Set a generic 4-beat arc when arc generation fails."""
+        objective = str(self.world_state.get("objective", "Investigate the situation") or "Investigate the situation")
+        fallback = {
+            "hook": {
+                "goal": f"Pursue the opening lead: {objective}",
+                "key_npcs": [],
+                "success_condition": "The party identifies the main threat or mystery.",
+            },
+            "complication": {
+                "goal": "Overcome the first obstacle blocking your path.",
+                "key_npcs": [],
+                "success_condition": "The party faces a setback or discovers a deeper problem.",
+            },
+            "climax": {
+                "goal": "Confront the main threat directly.",
+                "key_npcs": [],
+                "success_condition": "The main conflict reaches a decisive moment.",
+            },
+            "resolution": {
+                "goal": "Resolve the conflict and show its consequences.",
+                "key_npcs": [],
+                "success_condition": "The story reaches a clear conclusion.",
+            },
+        }
+        self.update_world_state("story_arc", fallback)
+        self.update_world_state("current_beat", "hook")
+
     def generate_response(self, prompt: str, player_sheet: CharacterSheet, npcs: dict) -> str:
         self.add_history("user", prompt)
-        
-        world_state_summary = json.dumps(self.world_state, indent=2)
-        
+
         npc_summaries = []
         for npc in npcs.values():
             npc_summaries.append(f"- {npc.name} the {npc.class_name}")
-            
+
         full_prompt = (
             f"{player_sheet.get_prompt_summary()}\n\n"
             f"Your Companions:\n" + "\n".join(npc_summaries) + "\n\n"
             f"{self._pacing_context()}\n\n"
-            f"Current World State:\n{world_state_summary}\n\n"
-            "Here is the story so far:\n"
-            f"{self._format_history()}"
+            f"{self._dm_scene_context(prompt)}\n\n"
+            "Recent story beats:\n"
+            f"{self._recent_history_summary()}\n\n"
+            "Resolve only the submitted action and the world's immediate response.\n"
+            "Do not add extra assistant turns, recap loops, or speculative follow-up actions by the player.\n"
+            "Do not include labels such as Assistant:, User:, Outcome:, or repeated speaker prefixes.\n"
+            "End with one direct question asking what the player does next."
         )
 
         try:
@@ -122,7 +188,8 @@ class DungeonMaster:
                         full_response.append(response_part)
 
             final_response = "".join(full_response)
-            cleaned_response = self._extract_structured_updates(final_response)
+            cleaned_response = self._sanitize_dm_response(final_response, prompt)
+            cleaned_response = self._extract_structured_updates(cleaned_response)
             self._update_story_progress(prompt, cleaned_response)
             self.add_history("assistant", cleaned_response)
             print(apply_base_style(self._format_narration(cleaned_response), "parchment"))
@@ -136,6 +203,51 @@ class DungeonMaster:
 
     def _format_history(self):
         return "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in self.history])
+
+    def _recent_history_summary(self) -> str:
+        if not self.history:
+            return "- No prior events recorded."
+        summary_lines = []
+        for entry in self.history[-6:]:
+            role = entry.get("role", "assistant").title()
+            content = " ".join(str(entry.get("content", "")).split())
+            if len(content) > 140:
+                content = content[:137].rstrip() + "..."
+            summary_lines.append(f"- {role}: {content}")
+        return "\n".join(summary_lines)
+
+    def _dm_scene_context(self, prompt: str) -> str:
+        turn_context = {
+            "actor_name": self.world_state.get("player_name", "Player"),
+            "actor_type": "player",
+            "location": self.world_state.get("current_location") or self.world_state.get("location") or "Unknown",
+            "objective": self.world_state.get("objective") or "No objective recorded.",
+            "story_phase": self.world_state.get("story_phase") or "opening",
+            "current_round": int(self.world_state.get("current_round", 1) or 1),
+            "target_rounds": int(self.world_state.get("target_rounds", 0) or 0),
+            "remaining_rounds": int(self.world_state.get("remaining_rounds", 0) or 0),
+            "immediate_danger": self._immediate_danger_summary(),
+            "scene_summary": self.world_state.get("scene_summary") or "No scene summary recorded yet.",
+            "recent_party_actions": list(self.world_state.get("recent_party_actions", []))[-3:],
+            "notable_npcs": self._world_state_list("notable_npcs")[:4],
+            "nearby_locations": self._world_state_list("nearby_locations")[:4],
+            "resolved_events": self._world_state_list("resolved_events")[-4:],
+            "last_progress_events": self._world_state_list("last_progress_events")[-3:],
+        }
+        pending_roll = self.world_state.get("pending_roll")
+        pending_roll_text = "none"
+        if isinstance(pending_roll, dict):
+            pending_roll_text = pending_roll.get("label", "pending roll")
+        turn_context["phase_goal"] = phase_goal(turn_context["story_phase"], turn_context["remaining_rounds"])
+        turn_context["scene_momentum"] = momentum_label(int(self.world_state.get("scene_stall_count", 0) or 0))
+        return (
+            "Current turn context:\n"
+            f"{format_turn_context(turn_context)}\n"
+            f"Submitted action: {prompt}\n"
+            f"Pending roll: {pending_roll_text}\n"
+            f"Arc pressure: {self._arc_pressure_instruction()}\n"
+            f"Objective lock: {self._objective_lock_instruction()}"
+        )
 
     def _pacing_context(self) -> str:
         target_rounds = int(self.world_state.get("target_rounds", 0) or 0)
@@ -168,6 +280,26 @@ class DungeonMaster:
         cleaned = re.sub(r'\n?\s*<award_gold amount="[^"]+"(?: reason="[^"]*")?\s*/>\s*', "\n", cleaned)
         cleaned = re.sub(r'\n?\s*<level_up\s*/>\s*', "\n", cleaned)
         return cleaned.strip()
+
+    def _sanitize_dm_response(self, response: str, submitted_action: str) -> str:
+        cleaned = response.strip()
+        cleaned = re.sub(r"\bAssistant\s*\n", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"(?m)^\s*(?:Assistant|User|Narrator)\s*:.*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"(?m)^\s*Outcome:\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"(?m)^\s*(?:What do you do next\?|What action do you take\?)\s*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = self._truncate_after_follow_up(cleaned)
+        cleaned = self._strip_follow_up_player_action(cleaned, submitted_action)
+        cleaned = re.sub(r'(?m)^\s*"?What do you do next\?"?\s*$', "", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        cleaned = cleaned.strip()
+        if not cleaned:
+            return (
+                "The situation shifts in response to your action, but the exact result is still unclear. "
+                "A brief opening remains in front of you. What do you do next?"
+            )
+        if not re.search(r"What do you do\??$", cleaned):
+            cleaned = cleaned.rstrip(" .") + "\n\nWhat do you do next?"
+        return cleaned
 
     def _extract_pending_roll(self, response: str) -> dict | None:
         ability_map = {
@@ -207,6 +339,96 @@ class DungeonMaster:
         if any(marker in lowered for marker in calm_guard_markers) and set(enemies) == {"Guard"}:
             return False
         return any(marker in lowered for marker in hostile_markers)
+
+    def _world_state_list(self, key: str) -> list[str]:
+        value = self.world_state.get(key, [])
+        if isinstance(value, list):
+            return [str(entry).strip() for entry in value if str(entry).strip()]
+        if value:
+            return [str(value).strip()]
+        return []
+
+    def _immediate_danger_summary(self) -> str:
+        pending_enemies = self._world_state_list("pending_encounter_enemies")
+        if pending_enemies:
+            return f"Hostile pressure from: {', '.join(pending_enemies[:4])}."
+        pending_roll = self.world_state.get("pending_roll")
+        if isinstance(pending_roll, dict):
+            return f"Pending roll: {pending_roll.get('label', 'Resolve the requested roll.')}"
+        return "No immediate danger recorded."
+
+    def _arc_pressure_instruction(self) -> str:
+        story_phase = str(self.world_state.get("story_phase", "opening") or "opening")
+        remaining_rounds = int(self.world_state.get("remaining_rounds", 0) or 0)
+        stall_count = int(self.world_state.get("scene_stall_count", 0) or 0)
+        if remaining_rounds <= 2:
+            return "Force a decisive confrontation, rescue, escape, or clear ending in this scene."
+        if stall_count >= 3:
+            return "The scene has stalled. Introduce an immediate reveal, enemy move, ticking deadline, or irreversible consequence now."
+        if stall_count >= 1:
+            return "Avoid another cautious repetition. Advance to a new clue, threat, or forced choice."
+        if story_phase == "climax":
+            return "Bring the main threat or decisive truth into direct contact with the party."
+        if story_phase == "resolution":
+            return "Resolve the main thread and show the outcome."
+        if story_phase == "midgame":
+            return "Complicate the mission and force a meaningful choice."
+        return "Commit to the hook and move toward the first real obstacle."
+
+    def _objective_lock_instruction(self) -> str:
+        objective = str(self.world_state.get("objective", "") or "").strip()
+        remaining_rounds = int(self.world_state.get("remaining_rounds", 0) or 0)
+        if not objective:
+            return "Keep the response tied to the clearest existing lead in the scene."
+        if remaining_rounds <= 2:
+            return f"Resolve or decisively answer this active objective now: {objective}"
+        return f"Keep the response tied to this active objective and do not branch away from it: {objective}"
+
+    def _truncate_after_follow_up(self, text: str) -> str:
+        markers = [
+            "\nAssistant\n",
+            "\nWhat do you do next?\nOutcome:",
+            "\nWhat action do you take?\nOutcome:",
+            "\nOutcome:",
+        ]
+        end = len(text)
+        for marker in markers:
+            position = text.find(marker)
+            if position != -1:
+                end = min(end, position)
+        return text[:end].strip()
+
+    def _strip_follow_up_player_action(self, text: str, submitted_action: str) -> str:
+        player_name = str(self.world_state.get("player_name") or "").strip()
+        if not player_name:
+            return text
+        pattern = re.compile(
+            rf"\b{re.escape(player_name)}\s*:\s*(.+?)(?=(?:\n[A-Z][a-zA-Z' -]+:|\n\*\*|\nWhat do you do next\?|$))",
+            re.DOTALL,
+        )
+        kept_parts = []
+        last_index = 0
+        for match in pattern.finditer(text):
+            spoken = " ".join(match.group(1).split())
+            if self._is_same_action(spoken, submitted_action):
+                continue
+            kept_parts.append(text[last_index:match.start()])
+            last_index = match.end()
+        kept_parts.append(text[last_index:])
+        return "".join(kept_parts).strip()
+
+    def _is_same_action(self, generated_action: str, submitted_action: str) -> bool:
+        generated = self._normalize_for_compare(generated_action)
+        submitted = self._normalize_for_compare(submitted_action)
+        if not generated or not submitted:
+            return False
+        if generated == submitted:
+            return True
+        return submitted in generated
+
+    def _normalize_for_compare(self, text: str) -> str:
+        normalized = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+        return " ".join(normalized.split())
 
     def _update_story_progress(self, user_input: str, response: str) -> None:
         resolved_events = list(self.world_state.get("resolved_events", []))

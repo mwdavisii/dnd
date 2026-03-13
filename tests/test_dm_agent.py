@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import requests
+import json
 
 from dnd.database import create_game_session, initialize_database
 from dnd.dm.agent import DungeonMaster
@@ -209,3 +210,147 @@ def test_generate_response_includes_pacing_context(monkeypatch, dm_db, player_sh
     assert "- Target rounds: 20" in prompt
     assert "- Remaining rounds: 12" in prompt
     assert "- Story phase: midgame" in prompt
+    assert "Submitted action: Look for tracks." in prompt
+    assert "Current turn context:" in prompt
+    assert "Arc pressure:" in prompt
+    assert "Objective lock:" in prompt
+
+
+def test_sanitize_dm_response_removes_assistant_continuation(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    cleaned = dm._sanitize_dm_response(
+        "The guard flinches as the goblin bolts for cover.\n\nWhat do you do next?\nOutcome: The crowd panics.\nAssistant\n\nThe story keeps going.",
+        "Aim at the goblin.",
+    )
+
+    assert "Assistant" not in cleaned
+    assert "Outcome:" not in cleaned
+    assert "The story keeps going." not in cleaned
+    assert cleaned.endswith("What do you do next?")
+
+
+def test_sanitize_dm_response_removes_unsubmitted_player_follow_up(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("player_name", "Kraton")
+
+    cleaned = dm._sanitize_dm_response(
+        'The goblin springs from the forge and the guard stumbles back.\n\nKraton: "I fire now."\n\nThe bolt thuds into the doorframe.',
+        "Raise the crossbow and wait.",
+    )
+
+    assert 'Kraton: "I fire now."' not in cleaned
+    assert "The goblin springs from the forge" in cleaned
+    assert cleaned.endswith("What do you do next?")
+
+
+def test_arc_pressure_instruction_forces_resolution_when_rounds_low(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("remaining_rounds", 2)
+
+    assert "decisive confrontation" in dm._arc_pressure_instruction()
+
+
+def test_arc_pressure_instruction_detects_stalled_scene(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("scene_stall_count", 3)
+    dm.update_world_state("remaining_rounds", 5)
+
+    assert "Introduce an immediate reveal" in dm._arc_pressure_instruction()
+
+
+def test_objective_lock_instruction_prefers_current_thread(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("objective", "Follow the cloaked man before he leaves town.")
+    dm.update_world_state("remaining_rounds", 5)
+
+    assert "do not branch away" in dm._objective_lock_instruction()
+
+
+def test_generate_arc_populates_world_state(monkeypatch, dm_db, player_sheet):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    arc_payload = {
+        "objective": "Follow the cloaked figure before he leaves town.",
+        "story_hook": "A mysterious cloaked man is leaving the inn in a hurry.",
+        "notable_npcs": ["Cloaked Man", "Innkeeper"],
+        "nearby_locations": ["Town Gate", "Market Square"],
+        "arc": {
+            "hook": {
+                "goal": "Follow the cloaked man to discover where he is going.",
+                "key_npcs": ["Cloaked Man"],
+                "success_condition": "The party learns where the man is headed or confronts him.",
+            },
+            "complication": {
+                "goal": "Uncover the secret the man is hiding.",
+                "key_npcs": ["Cloaked Man", "Innkeeper"],
+                "success_condition": "The party discovers the threat to the town.",
+            },
+            "climax": {
+                "goal": "Confront the main threat directly.",
+                "key_npcs": ["Cloaked Man"],
+                "success_condition": "The party defeats or neutralizes the threat.",
+            },
+            "resolution": {
+                "goal": "Resolve the aftermath and show consequences.",
+                "key_npcs": [],
+                "success_condition": "The story reaches a clear ending.",
+            },
+        },
+    }
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": json.dumps(arc_payload)}
+    fake_response.raise_for_status.return_value = None
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        dm.generate_arc("You see a cloaked figure leaving the inn.")
+
+    assert dm.world_state["current_beat"] == "hook"
+    assert dm.world_state["story_arc"]["hook"]["goal"] == "Follow the cloaked man to discover where he is going."
+    assert dm.world_state["objective"] == "Follow the cloaked figure before he leaves town."
+    assert "Cloaked Man" in dm.world_state["notable_npcs"]
+    assert "Town Gate" in dm.world_state["nearby_locations"]
+
+
+def test_generate_arc_falls_back_on_bad_json(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "not valid json at all"}
+    fake_response.raise_for_status.return_value = None
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        dm.generate_arc("You see a cloaked figure leaving the inn.")
+
+    assert dm.world_state["current_beat"] == "hook"
+    assert "hook" in dm.world_state["story_arc"]
+    assert "complication" in dm.world_state["story_arc"]
+    assert "climax" in dm.world_state["story_arc"]
+    assert "resolution" in dm.world_state["story_arc"]
+
+
+def test_generate_arc_skips_if_arc_already_exists(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("story_arc", {"hook": {"goal": "existing"}})
+
+    with patch("dnd.dm.agent.requests.post") as mock_post:
+        dm.generate_arc("Some opening scene.")
+
+    mock_post.assert_not_called()
