@@ -4,7 +4,7 @@ import requests
 import json
 from dotenv import load_dotenv
 from dnd.database import load_npc_memories, save_npc_memory
-from dnd.ui import wrap_text
+from dnd.ui import thinking_message, wrap_text
 
 load_dotenv()
 
@@ -34,10 +34,15 @@ class NPCAgent:
             "You are in a party of adventurers. Here is the story so far:\n"
             f"{self._format_history(game_context)}\n\n"
             f"You are now being asked directly: {prompt}\n\n"
+            "Reply directly to the player in 1-3 short sentences.\n"
+            "Be concrete and useful. Prefer one recommendation or one warning.\n"
+            "Do not narrate scene changes. Do not address other companions unless necessary.\n"
+            "Do not end with filler, speeches, or party banter.\n"
             "What is your response?"
         )
 
         try:
+            print(thinking_message(f"{self.name} is thinking"))
             response = requests.post(
                 f"{self.ollama_host}/api/generate",
                 json={
@@ -71,19 +76,27 @@ class NPCAgent:
             print(error_message)
             return error_message
 
-    def generate_turn_action(self, game_context: list, scene_summary: str) -> str:
+    def generate_turn_action(self, game_context: list, scene_summary: str, recent_party_actions: list[str] | None = None) -> str:
+        party_actions = recent_party_actions or []
         prompt = (
             f"{self.system_prompt}\n\n"
             "What you distinctly remember:\n"
             f"{self._format_memory()}\n\n"
             "Here is the current scene summary:\n"
             f"{scene_summary}\n\n"
+            "Recent party actions:\n"
+            f"{self._format_party_actions(party_actions)}\n\n"
             "Here is the recent party history:\n"
             f"{self._format_history(game_context[-8:])}\n\n"
-            "It is your turn. In 1-2 sentences, say what you do or advise next."
+            f"It is {self.name}'s turn.\n"
+            "In 1-2 short sentences, describe only your own action, movement, warning, or observation.\n"
+            "Coordinate with recent ally actions when it makes sense.\n"
+            "Do not narrate the player's actions. Do not command the player to cast, attack, or move.\n"
+            "Do not speak for other companions. Stay concrete and brief."
         )
 
         try:
+            print(thinking_message(f"{self.name} is thinking"))
             response = requests.post(
                 f"{self.ollama_host}/api/generate",
                 json={
@@ -126,3 +139,8 @@ class NPCAgent:
         if not self.memory:
             return "- No strong memories yet."
         return "\n".join(f"- {entry}" for entry in self.memory[-8:])
+
+    def _format_party_actions(self, actions: list[str]) -> str:
+        if not actions:
+            return "- No recent party actions recorded."
+        return "\n".join(f"- {action}" for action in actions[-3:])

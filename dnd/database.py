@@ -65,6 +65,54 @@ def format_save_label(path: Path) -> str:
         return "legacy_save"
     return path.stem
 
+def get_save_metadata(path: Path) -> dict[str, str]:
+    fallback = {
+        "created_at": _format_timestamp(datetime.fromtimestamp(path.stat().st_ctime)) if path.exists() else "Unknown",
+        "last_accessed_at": _format_timestamp(datetime.fromtimestamp(path.stat().st_mtime)) if path.exists() else "Unknown",
+    }
+    if not path.exists():
+        return fallback
+
+    try:
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT created_at, last_accessed_at FROM save_metadata WHERE id = 1"
+        ).fetchone()
+        conn.close()
+        if not row:
+            return fallback
+        return {
+            "created_at": _format_timestamp(row["created_at"]),
+            "last_accessed_at": _format_timestamp(row["last_accessed_at"]),
+        }
+    except sqlite3.Error:
+        return fallback
+
+def touch_save_accessed_at():
+    conn = get_db_connection()
+    conn.execute(
+        """
+        INSERT INTO save_metadata (id, created_at, last_accessed_at)
+        VALUES (1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET last_accessed_at = CURRENT_TIMESTAMP
+        """
+    )
+    conn.commit()
+    conn.close()
+
+def _format_timestamp(value) -> str:
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value.replace(" ", "T"))
+        except ValueError:
+            return str(value)
+    else:
+        return str(value)
+    return dt.strftime("%Y-%m-%d %I:%M %p")
+
 def create_game_session() -> int:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -165,9 +213,18 @@ def initialize_database():
     );""")
 
     cursor.execute("""
+    CREATE TABLE IF NOT EXISTS save_metadata (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        last_accessed_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );""")
+
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS characters (
         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
         class_name TEXT,
+        sex TEXT,
+        pronouns TEXT,
         hp_current INTEGER, hp_max INTEGER, stats TEXT, level INTEGER DEFAULT 1,
         proficiency_bonus INTEGER DEFAULT 2, hit_die_type TEXT DEFAULT 'd8',
         hit_dice_max INTEGER DEFAULT 1, hit_dice_current INTEGER DEFAULT 1,
@@ -240,6 +297,13 @@ def initialize_database():
     );""")
 
     _migrate_legacy_schema(cursor)
+    cursor.execute(
+        """
+        INSERT INTO save_metadata (id, created_at, last_accessed_at)
+        VALUES (1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO NOTHING
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -254,6 +318,8 @@ def _ensure_character_columns(cursor):
         return
     columns = _table_columns(cursor, "characters")
     additions = {
+        "sex": "TEXT",
+        "pronouns": "TEXT",
         "spell_slots_l2_current": "INTEGER DEFAULT 0",
         "spell_slots_l2_max": "INTEGER DEFAULT 0",
         "spell_slots_l3_current": "INTEGER DEFAULT 0",

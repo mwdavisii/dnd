@@ -53,12 +53,22 @@ def choose_companion_count(max_companions: int) -> int:
             continue
     return choice
 
+
+def choose_identity_field(label: str, examples: str = "") -> str:
+    prompt = f"Optional {label}"
+    if examples:
+        prompt += f" ({examples})"
+    prompt += " - press Enter to skip\n> "
+    return input(prompt).strip()
+
 def run_character_creation():
     conn = get_db_connection()
     cursor = conn.cursor()
     clear_screen()
     char_name = ""
     while not char_name: char_name = input("--- What is your character's name? ---\n> ").strip()
+    sex = choose_identity_field("sex", "female, male, nonbinary")
+    pronouns = choose_identity_field("pronouns", "she/her, he/him, they/them")
     clear_screen()
     print(f"--- {char_name}, choose your class ---")
     class_list = list(CLASS_DATA.keys())
@@ -119,7 +129,10 @@ def run_character_creation():
     l1_slots = class_info.get('spell_slots_l1', 0)
     starting_gold = class_info.get('starting_gold', 0)
     try:
-        cursor.execute( "INSERT INTO characters (name, class_name, hp_current, hp_max, stats, level, proficiency_bonus, hit_die_type, hit_dice_max, hit_dice_current, spell_slots_l1_max, spell_slots_l1_current, gold, is_player) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (char_name, chosen_class_name, max_hp, max_hp, json.dumps(stats), 1, 2, class_info['hit_die'], 1, 1, l1_slots, l1_slots, starting_gold, 1) )
+        cursor.execute(
+            "INSERT INTO characters (name, class_name, sex, pronouns, hp_current, hp_max, stats, level, proficiency_bonus, hit_die_type, hit_dice_max, hit_dice_current, spell_slots_l1_max, spell_slots_l1_current, gold, is_player) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (char_name, chosen_class_name, sex or None, pronouns or None, max_hp, max_hp, json.dumps(stats), 1, 2, class_info['hit_die'], 1, 1, l1_slots, l1_slots, starting_gold, 1),
+        )
         char_id = cursor.lastrowid
         all_profs = class_info['proficiencies'] + bg_info['proficiencies'] + bg_info['tools']
         _handle_proficiencies(conn, char_id, all_profs, [])
@@ -130,6 +143,10 @@ def run_character_creation():
         conn.close()
         clear_screen()
         print(f"--- Character '{char_name}' the {chosen_class_name} ({chosen_bg_name}) Created! ---")
+        if sex:
+            print(f"Sex: {sex}")
+        if pronouns:
+            print(f"Pronouns: {pronouns}")
         print("\nFinal Stats:", stats)
         highest_stat = max(stats, key=stats.get)
         lowest_stat = min(stats, key=stats.get)

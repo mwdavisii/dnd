@@ -63,6 +63,10 @@ class CharacterSheet:
     @property
     def class_name(self): return self._get_character_row()['class_name']
     @property
+    def sex(self): return self._get_character_row()['sex']
+    @property
+    def pronouns(self): return self._get_character_row()['pronouns']
+    @property
     def stats(self): return json.loads(self._get_character_row()['stats'])
     @property
     def current_hp(self): return self._get_character_row()['hp_current']
@@ -621,6 +625,10 @@ class CharacterSheet:
     def get_prompt_summary(self) -> str:
         mods = self.ability_modifiers
         summary = f"--- Character: {self.name} ({self.class_name} {self.level}) ---\n"
+        if self.sex:
+            summary += f"Sex: {self.sex}\n"
+        if self.pronouns:
+            summary += f"Pronouns: {self.pronouns}\n"
         summary += f"AC: {self.armor_class} | HP: {self.current_hp}/{self.max_hp} | Initiative: {self.initiative:+} | Proficiency Bonus: +{self.proficiency_bonus}\n"
         summary += f"Gold: {self.gold} gp\n"
         summary += f"Stats: STR {self.stats['STR']}({mods['STR']:+}), DEX {self.stats['DEX']}({mods['DEX']:+}), CON {self.stats['CON']}({mods['CON']:+}), INT {self.stats['INT']}({mods['INT']:+}), WIS {self.stats['WIS']}({mods['WIS']:+}), CHA {self.stats['CHA']}({mods['CHA']:+})\n"

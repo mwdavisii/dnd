@@ -15,6 +15,8 @@ def player_sheet():
     sheet.class_name = "Wizard"
     sheet.initiative = 2
     sheet.gold = 100
+    sheet.ability_modifiers = {"STR": -1, "DEX": 3, "CON": 1, "INT": 3, "WIS": 0, "CHA": 1}
+    sheet.get_saving_throw_modifier.side_effect = lambda ability: {"STR": 0, "DEX": 5, "CON": 1, "INT": 3, "WIS": 0, "CHA": 1}[ability]
     sheet.spells = [
         {'name': 'Fire Bolt', 'level': 0},
         {'name': 'Magic Missile', 'level': 1},
@@ -94,14 +96,46 @@ def test_roll_invalid_skips_dm(handler):
     assert skip_dm is True
 
 
+def test_roll_uses_pending_roll_when_no_args(handler, dm, capsys):
+    dm.world_state["pending_roll"] = {"type": "save", "ability": "DEX", "label": "Dexterity saving throw"}
+    with patch('dnd.cli.roll_dice', return_value=(12, "Rolling 1d20: (12) = 12")):
+        skip_dm, result = handler.handle("/roll")
+    assert skip_dm is True
+    assert result == ""
+    out = capsys.readouterr().out
+    assert "Dexterity saving throw:" in out
+    assert "Rolling 1d20: (12) = 12 + 5 = 17" in out
+    dm.update_world_state.assert_called_with("pending_roll", None)
+
+
+def test_roll_supports_ability_shortcut(handler, dm, capsys):
+    with patch('dnd.cli.roll_dice', return_value=(10, "Rolling 1d20: (10) = 10")):
+        skip_dm, result = handler.handle("/roll dex")
+    assert skip_dm is True
+    assert result == ""
+    out = capsys.readouterr().out
+    assert "DEX check:" in out
+    assert "Rolling 1d20: (10) = 10 + 3 = 13" in out
+
+
+def test_roll_supports_save_shortcut(handler, dm, capsys):
+    with patch('dnd.cli.roll_dice', return_value=(11, "Rolling 1d20: (11) = 11")):
+        skip_dm, result = handler.handle("/roll dex save")
+    assert skip_dm is True
+    assert result == ""
+    out = capsys.readouterr().out
+    assert "DEX saving throw:" in out
+    assert "Rolling 1d20: (11) = 11 + 5 = 16" in out
+
+
 # ---------------------------------------------------------------------------
 # /attack
 # ---------------------------------------------------------------------------
 
 def test_attack_shows_breakdown(handler, capsys):
     skip_dm, result = handler.handle("/attack Dagger")
-    assert skip_dm is True
-    assert result == ""
+    assert skip_dm is False
+    assert result == "I attack with my Dagger."
     out = capsys.readouterr().out
     assert "Attacking with Dagger" in out
     assert "To Hit: 1d20 + DEX mod (+3) + proficiency (+2) = +5" in out
@@ -111,10 +145,46 @@ def test_attack_shows_breakdown(handler, capsys):
 def test_attack_with_teaching_mode(handler, capsys):
     handler.handle("/teach on")
     skip_dm, _ = handler.handle("/attack Dagger")
-    assert skip_dm is True
+    assert skip_dm is False
     out = capsys.readouterr().out
     assert "Teaching mode is on." in out
     assert "Teaching: Roll the d20 and add the total to-hit bonus." in out
+
+
+def test_attack_rejected_when_not_player_turn(player_sheet, dm, capsys):
+    npc = MagicMock()
+    npc.name = "Bram"
+    npc_sheet = MagicMock()
+    npc_sheet.initiative = 1
+    h = CommandHandler(player_sheet, {"wizard": player_sheet, "bram": npc_sheet}, npcs={"bram": npc}, dm=dm)
+    h.advance_turn()
+    skip_dm, result = h.handle("/attack Dagger")
+    assert skip_dm is True
+    assert result == ""
+    out = capsys.readouterr().out
+    assert "It is currently Bram's turn, not yours." in out
+
+
+def test_player_can_act_false_when_companion_turn(player_sheet, dm, capsys):
+    npc = MagicMock()
+    npc.name = "Lyra"
+    npc_sheet = MagicMock()
+    npc_sheet.initiative = 1
+    h = CommandHandler(player_sheet, {"wizard": player_sheet, "lyra": npc_sheet}, npcs={"lyra": npc}, dm=dm)
+    h.advance_turn()
+    assert h.player_can_act() is False
+    assert "It is currently Lyra's turn, not yours." in capsys.readouterr().out
+
+
+def test_attack_auto_starts_pending_encounter(handler, dm, capsys):
+    dm.world_state["pending_encounter_enemies"] = ["Goblin"]
+    with patch('dnd.cli.roll_dice', side_effect=[(15, "Rolling 1d20: (15) = 15"), (12, "Rolling 1d20: (12) = 12")]):
+        skip_dm, result = handler.handle("/attack Dagger")
+    assert skip_dm is False
+    assert result == "I attack with my Dagger against Goblin."
+    out = capsys.readouterr().out
+    assert "Hostile enemies detected. Starting encounter." in out
+    dm.update_world_state.assert_any_call("pending_encounter_enemies", [])
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +209,14 @@ def test_cast_success_reaches_dm(handler, player_sheet):
     player_sheet.cast_spell.assert_called_once_with(1, 'Magic Missile')
 
 
+def test_cast_with_target_reaches_dm(handler, player_sheet):
+    player_sheet.cast_spell.return_value = True
+    skip_dm, result = handler.handle("/cast Fire Bolt at the whispering")
+    assert skip_dm is False
+    assert result == "I cast the Fire Bolt spell at the whispering."
+    player_sheet.cast_spell.assert_called_once_with(0, 'Fire Bolt')
+
+
 def test_cast_prints_spell_math(handler, player_sheet, capsys):
     player_sheet.cast_spell.return_value = True
     skip_dm, _ = handler.handle("/cast Magic Missile")
@@ -148,6 +226,56 @@ def test_cast_prints_spell_math(handler, player_sheet, capsys):
     assert "Spell Attack: 1d20 + INT mod (+3) + proficiency (+2) = +5" in out
     assert "Save DC: 8 + proficiency (2) + INT mod (+3) = 13" in out
     assert "Slot Use: Level 1 slot (2/2 available before casting)" in out
+
+
+def test_cast_rejected_when_not_player_turn(player_sheet, dm, capsys):
+    npc = MagicMock()
+    npc.name = "Bram"
+    npc_sheet = MagicMock()
+    npc_sheet.initiative = 1
+    h = CommandHandler(player_sheet, {"wizard": player_sheet, "bram": npc_sheet}, npcs={"bram": npc}, dm=dm)
+    h.advance_turn()
+    player_sheet.cast_spell.return_value = True
+    skip_dm, result = h.handle("/cast Magic Missile")
+    assert skip_dm is True
+    assert result == ""
+    assert "It is currently Bram's turn, not yours." in capsys.readouterr().out
+
+
+def test_cast_auto_starts_pending_encounter_for_offensive_spell(handler, player_sheet, dm, capsys):
+    dm.world_state["pending_encounter_enemies"] = ["Goblin"]
+    player_sheet.cast_spell.return_value = True
+    with patch('dnd.cli.roll_dice', side_effect=[(15, "Rolling 1d20: (15) = 15"), (12, "Rolling 1d20: (12) = 12")]):
+        skip_dm, result = handler.handle("/cast Magic Missile")
+    assert skip_dm is False
+    assert result == "I cast the Magic Missile spell."
+    out = capsys.readouterr().out
+    assert "Hostile enemies detected. Starting encounter." in out
+    dm.update_world_state.assert_any_call("pending_encounter_enemies", [])
+
+
+def test_cast_non_offensive_spell_does_not_auto_start_encounter(handler, player_sheet, dm, capsys):
+    dm.world_state["pending_encounter_enemies"] = ["Goblin"]
+    player_sheet.spells = [{'name': 'Light', 'level': 0}]
+    player_sheet.cast_spell.return_value = True
+    player_sheet.get_spellcasting_breakdown.return_value = {
+        "spell_name": "Light",
+        "level": 0,
+        "ability_name": "INT",
+        "ability_mod": 3,
+        "proficiency_bonus": 2,
+        "spell_save_dc": 13,
+        "spell_attack_bonus": 5,
+        "range": "Touch",
+        "casting_time": "1 action",
+        "duration": "1 hour",
+        "slots_current": None,
+        "slots_max": None,
+    }
+    skip_dm, result = handler.handle("/cast Light")
+    assert skip_dm is False
+    assert result == "I cast the Light spell."
+    assert "Hostile enemies detected. Starting encounter." not in capsys.readouterr().out
 
 
 def test_cast_no_slots_skips_dm(handler, player_sheet):
@@ -352,6 +480,14 @@ def test_suggested_actions_include_beginner_prompts(handler):
     assert len(suggestions) == 4
 
 
+def test_suggested_actions_include_slash_ask_when_companion_exists(player_sheet, dm):
+    npc = MagicMock()
+    npc.name = "Aria"
+    h = CommandHandler(player_sheet, {"wizard": player_sheet}, npcs={"aria": npc}, dm=dm)
+    suggestions = h.get_suggested_actions()
+    assert "/ask aria What do you notice?" in suggestions
+
+
 def test_turn_status_defaults_to_player(handler, capsys):
     skip_dm, _ = handler.handle("/turn")
     assert skip_dm is True
@@ -381,15 +517,21 @@ def test_npc_turn_command_runs_active_companion(player_sheet, dm, capsys):
     npc_sheet = MagicMock()
     npc_sheet.initiative = 1
     h = CommandHandler(player_sheet, {'wizard': player_sheet, 'aria': npc_sheet}, npcs={'aria': npc}, dm=dm)
+    dm.world_state["recent_party_actions"] = ["Wizard acted: I move to the doorway."]
     h.advance_turn()
     skip_dm, _ = h.handle("/npcturn")
     assert skip_dm is True
-    npc.generate_turn_action.assert_called_once_with(dm.history, dm.world_state["scene_summary"] if "scene_summary" in dm.world_state else "No scene summary recorded yet.")
+    npc.generate_turn_action.assert_called_once_with(
+        dm.history,
+        dm.world_state["scene_summary"] if "scene_summary" in dm.world_state else "No scene summary recorded yet.",
+        ["Wizard acted: I move to the doorway."],
+    )
     out = capsys.readouterr().out
     assert "Aria:" in out
     assert "I check the doorway for trouble." in out
     assert "Active Turn: Wizard" in out
     dm.add_history.assert_called_once_with("assistant", "Aria: I check the doorway for trouble.")
+    dm.update_world_state.assert_any_call("recent_party_actions", ["Wizard acted: I move to the doorway.", "Aria acted: I check the doorway for trouble."])
 
 
 def test_npc_turn_suggestions_when_companion_active(player_sheet, dm):
@@ -400,7 +542,7 @@ def test_npc_turn_suggestions_when_companion_active(player_sheet, dm):
     h = CommandHandler(player_sheet, {'wizard': player_sheet, 'aria': npc_sheet}, npcs={'aria': npc}, dm=dm)
     h.advance_turn()
     suggestions = h.get_suggested_actions()
-    assert suggestions == ["/npcturn", "/endturn", "ask aria What do you want to do?", "/turn"]
+    assert suggestions == ["/npcturn", "/endturn", "/ask aria What do you want to do?", "/turn"]
 
 
 def test_encounter_start_builds_initiative_order(player_sheet, dm, capsys):
@@ -413,6 +555,39 @@ def test_encounter_start_builds_initiative_order(player_sheet, dm, capsys):
     assert "Encounter started against: Goblin." in out
     assert "Active Turn: Wizard" in out
     assert "[enemy]" in out
+
+
+def test_encounter_workflow_prompts_for_enemies(player_sheet, dm, capsys):
+    h = CommandHandler(player_sheet, {'wizard': player_sheet}, npcs={}, dm=dm)
+    with patch("builtins.input", side_effect=["Goblin", "1", "Wolf", "", "", ""]), patch(
+        'dnd.cli.roll_dice',
+        side_effect=[(15, "Rolling 1d20: (15) = 15"), (12, "Rolling 1d20: (12) = 12"), (9, "Rolling 1d20: (9) = 9")],
+    ):
+        skip_dm, _ = h.handle("/encounter")
+    assert skip_dm is True
+    assert h.encounter is not None
+    out = capsys.readouterr().out
+    assert "Encounter setup" in out
+    assert "Encounter started against: Goblin, Wolf." in out
+
+
+def test_encounter_uses_pending_detected_enemies(player_sheet, dm, capsys):
+    h = CommandHandler(player_sheet, {'wizard': player_sheet}, npcs={}, dm=dm)
+    dm.world_state["pending_encounter_enemies"] = ["Goblin", "Goblin", "Wolf"]
+    with patch("builtins.input", return_value=""), patch(
+        'dnd.cli.roll_dice',
+        side_effect=[
+            (15, "Rolling 1d20: (15) = 15"),
+            (12, "Rolling 1d20: (12) = 12"),
+            (11, "Rolling 1d20: (11) = 11"),
+            (10, "Rolling 1d20: (10) = 10"),
+        ],
+    ):
+        skip_dm, _ = h.handle("/encounter")
+    assert skip_dm is True
+    out = capsys.readouterr().out
+    assert "Encounter started against: Goblin, Goblin, Wolf." in out
+    dm.update_world_state.assert_any_call("pending_encounter_enemies", [])
 
 
 def test_enemy_turn_forwards_to_dm(player_sheet, dm, capsys):
@@ -530,7 +705,7 @@ def test_unknown_command_skips_dm(handler, capsys):
 # ask <npc>
 # ---------------------------------------------------------------------------
 
-def test_ask_valid_npc(player_sheet, dm):
+def test_ask_valid_npc(player_sheet, dm, capsys):
     mock_npc = MagicMock()
     mock_npc.name = "Aria"
     mock_npc.generate_response.return_value = "We should check the north trail."
@@ -539,6 +714,24 @@ def test_ask_valid_npc(player_sheet, dm):
     assert skip_dm is True
     mock_npc.generate_response.assert_called_once_with("What do you think?", dm.history)
     dm.add_history.assert_called_once_with("assistant", "Aria: We should check the north trail.")
+    out = capsys.readouterr().out
+    assert "Conversation does not end your turn." in out
+    assert "Active Turn:" in out
+
+
+def test_slash_ask_valid_npc(player_sheet, dm, capsys):
+    mock_npc = MagicMock()
+    mock_npc.name = "Aria"
+    mock_npc.generate_response.return_value = "The north trail looks safer."
+    h = CommandHandler(player_sheet, {}, npcs={'aria': mock_npc}, dm=dm)
+    skip_dm, result = h.handle("/ask aria What do you think?")
+    assert skip_dm is True
+    assert result == ""
+    mock_npc.generate_response.assert_called_once_with("What do you think?", dm.history)
+    dm.add_history.assert_called_once_with("assistant", "Aria: The north trail looks safer.")
+    out = capsys.readouterr().out
+    assert "Conversation does not end your turn." in out
+    assert "Suggested actions:" in out
 
 
 def test_ask_unknown_npc_skips_dm(handler, capsys):
@@ -551,3 +744,68 @@ def test_ask_missing_message_skips_dm(handler, capsys):
     skip_dm, result = handler.handle("ask aria")
     assert skip_dm is True
     assert "ask <name>" in capsys.readouterr().out
+
+
+def test_slash_ask_workflow_prompts_for_companion_and_question(player_sheet, dm, capsys):
+    mock_npc = MagicMock()
+    mock_npc.name = "Aria"
+    mock_npc.generate_response.return_value = "We should scout ahead."
+    h = CommandHandler(player_sheet, {}, npcs={'aria': mock_npc}, dm=dm)
+    with patch("builtins.input", side_effect=["Aria", "What do you see?"]):
+        skip_dm, result = h.handle("/ask")
+    assert skip_dm is True
+    assert result == ""
+    out = capsys.readouterr().out
+    assert "Conversation setup" in out
+    mock_npc.generate_response.assert_called_once_with("What do you see?", dm.history)
+    assert "Conversation does not end your turn." in out
+
+
+# ---------------------------------------------------------------------------
+# Autocomplete
+# ---------------------------------------------------------------------------
+
+def test_command_completion_matches_prefix(handler):
+    assert "/cast" in handler.get_completion_candidates("/ca")
+
+
+def test_cast_completion_suggests_known_spells(handler):
+    completions = handler.get_completion_candidates("/cast M")
+    assert completions == ["/cast Magic Missile"]
+
+
+def test_help_completion_suggests_topics(handler):
+    completions = handler.get_completion_candidates("/help c")
+    assert "/help combat" in completions
+    assert "/help commands" in completions
+
+
+def test_ask_completion_suggests_companion_names(player_sheet, dm):
+    npc = MagicMock()
+    npc.name = "Aria"
+    h = CommandHandler(player_sheet, {"wizard": player_sheet}, npcs={"aria": npc}, dm=dm)
+    assert h.get_completion_candidates("ask a") == ["ask aria "]
+
+
+def test_slash_ask_completion_suggests_companion_names(player_sheet, dm):
+    npc = MagicMock()
+    npc.name = "Aria"
+    h = CommandHandler(player_sheet, {"wizard": player_sheet}, npcs={"aria": npc}, dm=dm)
+    assert h.get_completion_candidates("/ask a") == ["/ask aria "]
+
+
+def test_worldstate_completion_uses_known_keys(handler):
+    completions = handler.get_completion_candidates("/worldstate ob")
+    assert completions == ["/worldstate objective"]
+
+
+def test_encounter_completion_suggests_enemy_names(handler):
+    completions = handler.get_completion_candidates("/encounter start Go")
+    assert "/encounter start Goblin" in completions
+    assert "/encounter start Goblin:1" in completions
+
+
+def test_encounter_completion_handles_additional_enemy_entries(handler):
+    completions = handler.get_completion_candidates("/encounter start Goblin, Or")
+    assert "/encounter start Goblin, Orc" in completions
+    assert "/encounter start Goblin, Orc:1" in completions

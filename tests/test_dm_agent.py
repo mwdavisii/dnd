@@ -100,3 +100,88 @@ def test_format_narration_styles_quotes(monkeypatch, dm_db):
 
     assert '"We should be cautious,"' in formatted
     assert '"Goblins are known for their quick movements."' in formatted
+
+
+def test_extract_structured_updates_stores_pending_enemies(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    cleaned = dm._extract_structured_updates(
+        'The market erupts into chaos as raiders rush the square.\n<encounter enemies="Goblin,Goblin,Wolf,Madeup Beast" />'
+    )
+
+    assert "<encounter" not in cleaned
+    assert dm.world_state["pending_encounter_enemies"] == ["Goblin", "Goblin", "Wolf"]
+
+
+def test_extract_structured_updates_stores_pending_roll(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    dm._extract_structured_updates("A trap springs from the floor. Roll a Dexterity saving throw.")
+
+    assert dm.world_state["pending_roll"] == {
+        "type": "save",
+        "ability": "DEX",
+        "label": "Dexterity saving throw",
+    }
+
+
+def test_extract_structured_updates_strips_reward_tags(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    cleaned = dm._extract_structured_updates(
+        'You succeed and recover the letter.\n<award_gold amount="20" reason="retrieving the letter" />\n<level_up />'
+    )
+
+    assert "<award_gold" not in cleaned
+    assert "<level_up" not in cleaned
+
+
+def test_update_story_progress_tracks_resolved_events_and_location(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    dm._update_story_progress(
+        "deliver the letter",
+        "The mayor reads the letter with growing concern. This is serious. We need to rally the guards. You reach the edge of the Whispering Woods.",
+    )
+
+    assert "letter_delivered" in dm.world_state["resolved_events"]
+    assert "mayor_warned" in dm.world_state["resolved_events"]
+    assert "defenders_rallied" in dm.world_state["resolved_events"]
+    assert dm.world_state["current_location"] == "Whispering Woods edge"
+    assert dm.world_state["last_progress_events"]
+
+
+def test_encounter_guard_tag_ignored_when_guards_are_helping(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    cleaned = dm._extract_structured_updates(
+        'The guard nods and says, "Follow me. I can help gather the guards."<encounter enemies="Guard" />'
+    )
+
+    assert cleaned
+    assert dm.world_state.get("pending_encounter_enemies") in (None, [])
+
+
+def test_generate_opening_scene_prints_thinking_message(monkeypatch, dm_db, player_sheet, capsys):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "A courier races toward you with a sealed message. What do you do?"}
+    fake_response.raise_for_status.return_value = None
+
+    with patch('dnd.dm.agent.requests.post', return_value=fake_response):
+        dm.generate_opening_scene(player_sheet, {})
+
+    assert "Generating opening scene" in capsys.readouterr().out

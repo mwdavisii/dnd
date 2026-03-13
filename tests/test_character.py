@@ -8,6 +8,7 @@ from dnd.database import (
     create_game_session,
     delete_save_file,
     format_save_label,
+    get_save_metadata,
     get_db_connection,
     initialize_database,
     list_save_files,
@@ -18,6 +19,7 @@ from dnd.database import (
     set_db_file,
     seed_npcs,
     seed_spells,
+    touch_save_accessed_at,
 )
 from dnd.character import CharacterSheet
 from dnd.character_creator import choose_companion_count, run_character_creation
@@ -44,7 +46,7 @@ def setup_test_db(monkeypatch, tmp_path):
     # --- Character Creation for Testus (Wizard) ---
     # Use a sequential mock since the character creator uses bare "> " prompts
     # Wizard (12), Sage (3), +2/+1 (1), INT (+2), CON (+1)
-    inputs = iter(["Testus", "12", "3", "1", "INT", "CON", ""])
+    inputs = iter(["Testus", "", "", "12", "3", "1", "INT", "CON", ""])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
     
@@ -67,7 +69,7 @@ def setup_fighter_db(monkeypatch, tmp_path):
     seed_spells()
 
     # Fighter (2), Soldier (4), +2/+1 (1), STR (+2), CON (+1)
-    inputs = iter(["FighterTest", "2", "4", "1", "STR", "CON", ""])
+    inputs = iter(["FighterTest", "", "", "2", "4", "1", "STR", "CON", ""])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
     
@@ -88,7 +90,7 @@ def setup_rogue_db(monkeypatch, tmp_path):
     seed_spells()
 
     # Rogue (4), Criminal (2), +2/+1 (1), DEX (+2), INT (+1)
-    inputs = iter(["RogueTest", "4", "2", "1", "DEX", "INT", ""])
+    inputs = iter(["RogueTest", "", "", "4", "2", "1", "DEX", "INT", ""])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
     
@@ -109,7 +111,7 @@ def setup_barbarian_db(monkeypatch, tmp_path):
     seed_spells()
 
     # Barbarian (1), Soldier (4), +2/+1 (1), STR (+2), CON (+1)
-    inputs = iter(["BarbarianTest", "1", "4", "1", "STR", "CON", ""])
+    inputs = iter(["BarbarianTest", "", "", "1", "4", "1", "STR", "CON", ""])
     monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
     monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
     
@@ -130,6 +132,26 @@ def test_character_creation_and_loading(setup_test_db):
     assert sheet.name == "Testus"
     assert sheet.class_name == "Wizard"
     assert sheet.level == 1
+
+
+def test_character_creation_stores_optional_identity_fields(monkeypatch, tmp_path):
+    db_path = tmp_path / "identity_fields.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+    initialize_database()
+    seed_spells()
+
+    inputs = iter(["Aster", "nonbinary", "they/them", "12", "3", "1", "INT", "WIS", ""])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
+    monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+
+    player_name = run_character_creation()
+    assert player_name == "Aster"
+
+    sheet = CharacterSheet(name="Aster")
+    assert sheet.sex == "nonbinary"
+    assert sheet.pronouns == "they/them"
+    assert "Sex: nonbinary" in sheet.get_prompt_summary()
+    assert "Pronouns: they/them" in sheet.get_prompt_summary()
 
 def test_wizard_stat_calculation(setup_test_db):
     """Tests if stats are calculated correctly for our test Wizard."""
@@ -378,6 +400,48 @@ def test_save_file_helpers(monkeypatch, tmp_path):
     assert not Path(first_save).exists()
 
 
+def test_save_metadata_defaults_and_updates(monkeypatch, tmp_path):
+    db_path = tmp_path / "save_metadata.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+    initialize_database()
+
+    initial_metadata = get_save_metadata(db_path)
+    assert initial_metadata["created_at"] != "Unknown"
+    assert initial_metadata["last_accessed_at"] != "Unknown"
+
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE save_metadata SET created_at = ?, last_accessed_at = ? WHERE id = 1",
+        ("2026-03-01 10:00:00", "2026-03-02 11:30:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    updated_metadata = get_save_metadata(db_path)
+    assert updated_metadata["created_at"] == "2026-03-01 10:00 AM"
+    assert updated_metadata["last_accessed_at"] == "2026-03-02 11:30 AM"
+
+
+def test_touch_save_accessed_at_updates_existing_metadata(monkeypatch, tmp_path):
+    db_path = tmp_path / "touch_save_metadata.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+    initialize_database()
+
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE save_metadata SET created_at = ?, last_accessed_at = ? WHERE id = 1",
+        ("2026-03-01 10:00:00", "2026-03-01 10:00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    touch_save_accessed_at()
+
+    metadata = get_save_metadata(db_path)
+    assert metadata["created_at"] == "2026-03-01 10:00 AM"
+    assert metadata["last_accessed_at"] != "2026-03-01 10:00 AM"
+
+
 def test_create_save_path_uses_timestamp_when_name_missing(monkeypatch, tmp_path):
     monkeypatch.setattr('dnd.database.SAVE_DIR', tmp_path / "saves")
     save_path = Path(create_save_path())
@@ -456,6 +520,8 @@ def test_initialize_database_adds_missing_columns(monkeypatch, tmp_path):
 
     assert "is_player" in character_columns
     assert "is_raging" in character_columns
+    assert "sex" in character_columns
+    assert "pronouns" in character_columns
     assert "equipped" in inventory_columns
 
 def test_long_rest_full_restore(setup_test_db):

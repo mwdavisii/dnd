@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import sys
 import textwrap
@@ -34,6 +35,20 @@ def style(text: str, color: str | None = None, bold: bool = False, dim: bool = F
     if not color_enabled():
         return text
 
+    parts = _style_parts(color=color, bold=bold, dim=dim, italic=italic)
+    return "".join(parts) + text + RESET
+
+
+def apply_base_style(text: str, color: str | None = None, bold: bool = False, dim: bool = False, italic: bool = False) -> str:
+    if not color_enabled():
+        return text
+
+    parts = _style_parts(color=color, bold=bold, dim=dim, italic=italic)
+    prefix = "".join(parts)
+    return prefix + text.replace(RESET, RESET + prefix) + RESET
+
+
+def _style_parts(color: str | None = None, bold: bool = False, dim: bool = False, italic: bool = False) -> list[str]:
     parts = []
     if bold:
         parts.append(STYLES["bold"])
@@ -43,7 +58,7 @@ def style(text: str, color: str | None = None, bold: bool = False, dim: bool = F
         parts.append(STYLES["italic"])
     if color:
         parts.append(COLORS[color])
-    return "".join(parts) + text + RESET
+    return parts
 
 
 def banner(title: str) -> str:
@@ -65,6 +80,19 @@ def bullet(text: str) -> str:
 
 def prompt_marker() -> str:
     return style("»", "green", bold=True) + " "
+
+
+def thinking_message(label: str) -> str:
+    return style(f"<{label}...>", "silver", dim=True, italic=True)
+
+
+def highlight_quotes(text: str) -> str:
+    return re.sub(
+        r'"([^"]+)"',
+        lambda match: style(f'"{match.group(1)}"', "quote", bold=True, italic=True),
+        text,
+        flags=re.DOTALL,
+    )
 
 
 def terminal_width(default: int = 100) -> int:

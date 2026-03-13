@@ -14,17 +14,20 @@ from dnd.database import (
     delete_save_file,
     ensure_game_session,
     format_save_label,
+    get_save_metadata,
     get_db_connection,
     initialize_database,
     list_save_files,
     seed_npcs,
     seed_spells,
     set_db_file,
+    touch_save_accessed_at,
 )
 from dnd.character_creator import run_character_creation, clear_screen, choose_companion_count
 from dnd.data import STORE_INVENTORY # Import STORE_INVENTORY
 from dnd.cli import CommandHandler
-from dnd.ui import banner, prompt_marker, section, speaker, style, wrap_text
+from dnd.completion import enable_command_completion
+from dnd.ui import apply_base_style, banner, highlight_quotes, prompt_marker, section, speaker, style, wrap_text
 
 def main():
     """Main function to run the D&D game."""
@@ -37,6 +40,7 @@ def main():
     set_db_file(selected_save)
     is_new_save = not os.path.exists(selected_save)
     initialize_database()
+    touch_save_accessed_at()
 
     if is_new_save:
         seed_spells()
@@ -78,6 +82,7 @@ def main():
     dm = DungeonMaster(session_id=session_id)
     dm.update_world_state("player_name", player_name)
     handler = CommandHandler(player_sheet, character_sheets, npcs, dm)
+    enable_command_completion(handler)
 
     # --- Game Start ---
     clear_screen()
@@ -90,7 +95,7 @@ def main():
     else:
         print(style("You begin this adventure without companions.", "gray"))
     print(style("─" * 40, "gray"))
-    print(style(wrap_text(dm.generate_opening_scene(player_sheet, npcs)), "parchment"))
+    print(apply_base_style(highlight_quotes(wrap_text(dm.generate_opening_scene(player_sheet, npcs))), "parchment"))
     handler.print_turn_status()
     handler.print_suggested_actions()
 
@@ -108,27 +113,46 @@ def main():
                     continue
                 if not user_input:
                     continue
+            elif not handler.player_can_act():
+                continue
 
             print(f"\n{speaker('DM', 'gold')} ", end="")
             response = dm.generate_response(user_input, player_sheet, npcs)
+            recent_party_actions = list(dm.world_state.get("recent_party_actions", []))
+            recent_party_actions.append(f"{player_sheet.name} acted: {user_input}")
+            dm.update_world_state("recent_party_actions", recent_party_actions[-6:])
             scene_memory = build_scene_memory(user_input, response)
             dm.update_world_state("scene_summary", scene_memory)
             for npc in npcs.values():
                 npc.remember_scene(scene_memory)
 
             # Check for level up
-            if "<level_up />" in response:
-                print(f"\n{style('*** LEVEL UP! ***', 'green', bold=True)}")
-                for sheet in character_sheets.values():
-                    sheet.level_up()
+            new_progress_events = dm.world_state.get("last_progress_events", [])
+            reward_history = list(dm.world_state.get("reward_history", []))
+            if "<level_up />" in response and new_progress_events:
+                level_reward_key = f"level:{new_progress_events[0]}"
+                if level_reward_key not in reward_history:
+                    print(f"\n{style('*** LEVEL UP! ***', 'green', bold=True)}")
+                    for sheet in character_sheets.values():
+                        sheet.level_up()
+                    reward_history.append(level_reward_key)
+                    dm.update_world_state("reward_history", reward_history[-20:])
+            elif "<level_up />" in response:
+                print(style("Repeated level-up tag ignored because no new milestone was detected.", "gray", dim=True, italic=True))
             
             # Check for gold award
             gold_match = re.search(r'<award_gold amount="(\d+)"(?: reason="[^"]*")? />', response)
             if gold_match:
                 amount = int(gold_match.group(1))
-                player_sheet.add_gold(amount)
-                # Remove tag from DM response for cleaner display
-                response = re.sub(r'<award_gold amount="(\d+)"(?: reason="[^"]*")? />', '', response).strip()
+                reason_match = re.search(r'<award_gold amount="\d+"(?: reason="([^"]*)")? />', response)
+                reason = reason_match.group(1) if reason_match and reason_match.group(1) else "unlabeled_reward"
+                reward_key = f"gold:{reason}"
+                if reward_key not in reward_history:
+                    player_sheet.add_gold(amount)
+                    reward_history.append(reward_key)
+                    dm.update_world_state("reward_history", reward_history[-20:])
+                else:
+                    print(style(f"Repeated gold award ignored for '{reason}'.", "gray", dim=True, italic=True))
 
             handler.advance_turn()
             handler.print_turn_status()
@@ -181,7 +205,12 @@ def choose_save_file() -> str:
         clear_screen()
         print(banner("Save Files"))
         for index, save_path in enumerate(saves, start=1):
+            metadata = get_save_metadata(save_path)
             print(f"{style(str(index) + '.', 'cyan', bold=True)} {style(format_save_label(save_path), 'silver', bold=True)}")
+            print(
+                f"   {style('Created:', 'gray')} {style(metadata['created_at'], 'silver')}  "
+                f"{style('Last Played:', 'gray')} {style(metadata['last_accessed_at'], 'silver')}"
+            )
         print(style("N.", "green", bold=True) + " " + style("Create a new save", "silver"))
         print(style("D.", "red", bold=True) + " " + style("Delete an existing save", "silver"))
         choice = input(prompt_marker()).strip().lower()

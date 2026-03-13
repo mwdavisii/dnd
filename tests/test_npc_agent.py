@@ -1,5 +1,6 @@
 # tests/test_npc_agent.py
 import pytest
+from unittest.mock import MagicMock, patch
 from dnd.database import create_game_session, initialize_database, load_npc_memories
 from dnd.npc.agent import NPCAgent
 
@@ -79,3 +80,41 @@ def test_npc_agent_memory_is_session_scoped(monkeypatch, tmp_path):
 
     agent_two = NPCAgent("Aria", "Ranger", "You are Aria.", session_two)
     assert "session-one-memory" not in agent_two.memory
+
+
+def test_npc_agent_prints_thinking_message(monkeypatch, npc_db, capsys):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
+
+    fake_response = MagicMock()
+    fake_response.iter_lines.return_value = [b'{"response":"We should move quietly.","done":false}', b'{"done":true}']
+    fake_response.raise_for_status.return_value = None
+
+    with patch("dnd.npc.agent.requests.post", return_value=fake_response):
+        agent.generate_response("What now?", [])
+
+    assert "Aria is thinking" in capsys.readouterr().out
+
+
+def test_npc_turn_prompt_limits_action_ownership(monkeypatch, npc_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
+
+    captured = {}
+
+    def fake_post(_url, json=None, timeout=None):
+        captured["prompt"] = json["prompt"]
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"response": "I move to the doorway and watch for movement."}
+        return response
+
+    with patch("dnd.npc.agent.requests.post", side_effect=fake_post):
+        agent.generate_turn_action([], "The doorway is dark and quiet.", ["Mike acted: I move to the doorway."])
+
+    assert "Do not narrate the player's actions." in captured["prompt"]
+    assert "Do not command the player to cast, attack, or move." in captured["prompt"]
+    assert "Recent party actions:" in captured["prompt"]
+    assert "Mike acted: I move to the doorway." in captured["prompt"]
