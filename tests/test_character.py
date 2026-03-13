@@ -1,11 +1,28 @@
 # tests/test_character.py
 import pytest
 import os
+from pathlib import Path
 from unittest.mock import MagicMock
-from dnd.database import initialize_database, get_db_connection, seed_spells
+from dnd.database import (
+    create_save_path,
+    create_game_session,
+    delete_save_file,
+    format_save_label,
+    get_db_connection,
+    initialize_database,
+    list_save_files,
+    load_npc_memories,
+    load_world_state,
+    save_npc_memory,
+    save_world_state,
+    set_db_file,
+    seed_npcs,
+    seed_spells,
+)
 from dnd.character import CharacterSheet
-from dnd.character_creator import run_character_creation
+from dnd.character_creator import choose_companion_count, run_character_creation
 from dnd.data import CLASS_DATA
+from dnd.npc.prompts import NPC_ARCHETYPES
 
 # --- Test Fixture ---
 
@@ -257,6 +274,189 @@ def test_short_rest_no_hit_dice(setup_fighter_db):
     sheet.refresh_cache()
     assert sheet.current_hp == initial_hp # HP should not change
     assert sheet.hit_dice_current == 0 # Still 0
+
+
+def test_choose_companion_count_accepts_zero(monkeypatch):
+    monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    inputs = iter(["0"])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
+    assert choose_companion_count(5) == 0
+
+
+def test_choose_companion_count_retries_until_valid(monkeypatch):
+    monkeypatch.setattr('dnd.character_creator.clear_screen', lambda: None)
+    inputs = iter(["abc", "9", "3"])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(inputs))
+    assert choose_companion_count(5) == 3
+
+
+def test_seed_npcs_zero_companions(monkeypatch, tmp_path):
+    db_path = tmp_path / "test_seed_zero.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+    initialize_database()
+    seed_npcs(0)
+
+    conn = get_db_connection()
+    count = conn.execute("SELECT COUNT(*) FROM characters WHERE is_player = 0").fetchone()[0]
+    conn.close()
+    assert count == 0
+
+
+def test_seed_npcs_requested_count(monkeypatch, tmp_path):
+    db_path = tmp_path / "test_seed_three.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+    initialize_database()
+    seed_npcs(3)
+
+    conn = get_db_connection()
+    rows = conn.execute("SELECT name FROM characters WHERE is_player = 0").fetchall()
+    conn.close()
+    assert len(rows) == 3
+    assert len({row["name"] for row in rows}) == 3
+
+
+def test_npc_pool_supports_five_companions():
+    assert len(NPC_ARCHETYPES) >= 5
+
+
+def test_world_state_is_session_scoped(monkeypatch, tmp_path):
+    db_path = tmp_path / "test_world_state_sessions.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+    initialize_database()
+    session_one = create_game_session()
+    session_two = create_game_session()
+
+    save_world_state(session_one, "objective", "Find the relic")
+    save_world_state(session_two, "objective", "Guard the caravan")
+
+    assert load_world_state(session_one)["objective"] == "Find the relic"
+    assert load_world_state(session_two)["objective"] == "Guard the caravan"
+
+
+def test_npc_memory_is_session_scoped_in_database(monkeypatch, tmp_path):
+    db_path = tmp_path / "test_npc_memory_sessions.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+    initialize_database()
+    session_one = create_game_session()
+    session_two = create_game_session()
+
+    save_npc_memory(session_one, "Aria", "Remember the ruins")
+    save_npc_memory(session_two, "Aria", "Remember the harbor")
+
+    conn = get_db_connection()
+    session_one_rows = conn.execute(
+        "SELECT memory_text FROM npc_memories WHERE session_id = ? AND character_name = ?",
+        (session_one, "Aria"),
+    ).fetchall()
+    session_two_rows = conn.execute(
+        "SELECT memory_text FROM npc_memories WHERE session_id = ? AND character_name = ?",
+        (session_two, "Aria"),
+    ).fetchall()
+    conn.close()
+
+    assert [row["memory_text"] for row in session_one_rows] == ["Remember the ruins"]
+    assert [row["memory_text"] for row in session_two_rows] == ["Remember the harbor"]
+
+
+def test_save_file_helpers(monkeypatch, tmp_path):
+    monkeypatch.setattr('dnd.database.SAVE_DIR', tmp_path / "saves")
+    legacy_path = tmp_path / "legacy.db"
+    monkeypatch.setattr('dnd.database.DEFAULT_DB_FILE', str(legacy_path))
+    set_db_file(str(legacy_path))
+
+    first_save = create_save_path("My First Campaign")
+    assert first_save.endswith("my_first_campaign.db")
+    Path(first_save).touch()
+    legacy_path.touch()
+
+    saves = list_save_files()
+    assert Path(first_save) in saves
+    assert legacy_path in saves
+    assert format_save_label(Path(first_save)) == "my_first_campaign"
+
+    delete_save_file(first_save)
+    assert not Path(first_save).exists()
+
+
+def test_create_save_path_uses_timestamp_when_name_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr('dnd.database.SAVE_DIR', tmp_path / "saves")
+    save_path = Path(create_save_path())
+    assert save_path.suffix == ".db"
+    assert save_path.stem.startswith("save_")
+
+
+def test_initialize_database_migrates_legacy_world_state(monkeypatch, tmp_path):
+    db_path = tmp_path / "legacy_world_state.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+
+    conn = get_db_connection()
+    conn.execute("CREATE TABLE world_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("INSERT INTO world_state (key, value) VALUES (?, ?)", ("objective", '"Find the relic"'))
+    conn.commit()
+    conn.close()
+
+    initialize_database()
+
+    state = load_world_state(1)
+    assert state["objective"] == "Find the relic"
+
+
+def test_initialize_database_migrates_legacy_npc_memories(monkeypatch, tmp_path):
+    db_path = tmp_path / "legacy_npc_memories.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+
+    conn = get_db_connection()
+    conn.execute("CREATE TABLE npc_memories (id INTEGER PRIMARY KEY AUTOINCREMENT, character_name TEXT NOT NULL, memory_text TEXT NOT NULL)")
+    conn.execute("INSERT INTO npc_memories (character_name, memory_text) VALUES (?, ?)", ("Aria", "Old memory"))
+    conn.commit()
+    conn.close()
+
+    initialize_database()
+
+    assert load_npc_memories(1, "Aria") == ["Old memory"]
+
+
+def test_initialize_database_adds_missing_columns(monkeypatch, tmp_path):
+    db_path = tmp_path / "legacy_columns.db"
+    monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+
+    conn = get_db_connection()
+    conn.execute("""
+        CREATE TABLE characters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            class_name TEXT,
+            hp_current INTEGER,
+            hp_max INTEGER,
+            stats TEXT,
+            level INTEGER DEFAULT 1,
+            proficiency_bonus INTEGER DEFAULT 2,
+            hit_die_type TEXT DEFAULT 'd8',
+            hit_dice_max INTEGER DEFAULT 1,
+            hit_dice_current INTEGER DEFAULT 1
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            character_id INTEGER,
+            item_name TEXT NOT NULL,
+            quantity INTEGER DEFAULT 1
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    initialize_database()
+
+    conn = get_db_connection()
+    character_columns = {row["name"] for row in conn.execute("PRAGMA table_info(characters)").fetchall()}
+    inventory_columns = {row["name"] for row in conn.execute("PRAGMA table_info(inventory)").fetchall()}
+    conn.close()
+
+    assert "is_player" in character_columns
+    assert "is_raging" in character_columns
+    assert "equipped" in inventory_columns
 
 def test_long_rest_full_restore(setup_test_db):
     """Tests long rest fully restores HP, Hit Dice, and Spell Slots."""

@@ -11,7 +11,10 @@ from dnd.cli import CommandHandler
 @pytest.fixture
 def player_sheet():
     sheet = MagicMock()
+    sheet.name = "Wizard"
     sheet.class_name = "Wizard"
+    sheet.initiative = 2
+    sheet.gold = 100
     sheet.spells = [
         {'name': 'Fire Bolt', 'level': 0},
         {'name': 'Magic Missile', 'level': 1},
@@ -19,6 +22,34 @@ def player_sheet():
     sheet.inventory_items = [('Dagger', 1), ('Spellbook', 1)]
     sheet.equipped_items = []
     sheet.unequipped_items = ['Dagger', 'Spellbook']
+    sheet.get_attack_breakdown.return_value = {
+        "weapon_name": "Dagger",
+        "ability_name": "DEX",
+        "ability_mod": 3,
+        "is_proficient": True,
+        "proficiency_bonus": 2,
+        "poisoned_penalty": 0,
+        "total_attack_bonus": 5,
+        "base_damage_die": "1d4",
+        "damage_type": "Piercing",
+        "damage_modifier": 3,
+        "rage_damage": 0,
+        "sneak_attack_damage": None,
+    }
+    sheet.get_spellcasting_breakdown.return_value = {
+        "spell_name": "Magic Missile",
+        "level": 1,
+        "ability_name": "INT",
+        "ability_mod": 3,
+        "proficiency_bonus": 2,
+        "spell_save_dc": 13,
+        "spell_attack_bonus": 5,
+        "range": "120 feet",
+        "casting_time": "1 action",
+        "duration": "Instantaneous",
+        "slots_current": 2,
+        "slots_max": 2,
+    }
     sheet._id = 1
     return sheet
 
@@ -27,7 +58,16 @@ def player_sheet():
 def dm():
     mock_dm = MagicMock()
     mock_dm.history = []
-    mock_dm.world_state = {'location': 'tavern'}
+    mock_dm.world_state = {
+        'location': 'tavern',
+        'region': 'Greenfields',
+        'objective': 'Find the missing caravan',
+        'quests': ['Investigate the old road', 'Question the innkeeper'],
+        'discoveries': ['Fresh wagon tracks outside town'],
+        'notable_npcs': ['Innkeeper Mara'],
+        'nearby_locations': ['Old road', 'Town square'],
+        'exits': ['north to the old road', 'east to the stables'],
+    }
     return mock_dm
 
 
@@ -55,6 +95,29 @@ def test_roll_invalid_skips_dm(handler):
 
 
 # ---------------------------------------------------------------------------
+# /attack
+# ---------------------------------------------------------------------------
+
+def test_attack_shows_breakdown(handler, capsys):
+    skip_dm, result = handler.handle("/attack Dagger")
+    assert skip_dm is True
+    assert result == ""
+    out = capsys.readouterr().out
+    assert "Attacking with Dagger" in out
+    assert "To Hit: 1d20 + DEX mod (+3) + proficiency (+2) = +5" in out
+    assert "Damage: 1d4 + +3 Piercing" in out
+
+
+def test_attack_with_teaching_mode(handler, capsys):
+    handler.handle("/teach on")
+    skip_dm, _ = handler.handle("/attack Dagger")
+    assert skip_dm is True
+    out = capsys.readouterr().out
+    assert "Teaching mode is on." in out
+    assert "Teaching: Roll the d20 and add the total to-hit bonus." in out
+
+
+# ---------------------------------------------------------------------------
 # /sheet
 # ---------------------------------------------------------------------------
 
@@ -74,6 +137,17 @@ def test_cast_success_reaches_dm(handler, player_sheet):
     assert skip_dm is False
     assert result == "I cast the Magic Missile spell."
     player_sheet.cast_spell.assert_called_once_with(1, 'Magic Missile')
+
+
+def test_cast_prints_spell_math(handler, player_sheet, capsys):
+    player_sheet.cast_spell.return_value = True
+    skip_dm, _ = handler.handle("/cast Magic Missile")
+    assert skip_dm is False
+    out = capsys.readouterr().out
+    assert "Casting Magic Missile:" in out
+    assert "Spell Attack: 1d20 + INT mod (+3) + proficiency (+2) = +5" in out
+    assert "Save DC: 8 + proficiency (2) + INT mod (+3) = 13" in out
+    assert "Slot Use: Level 1 slot (2/2 available before casting)" in out
 
 
 def test_cast_no_slots_skips_dm(handler, player_sheet):
@@ -168,7 +242,10 @@ def test_inventory_skips_dm(handler, player_sheet, capsys):
     player_sheet.unequipped_items = ['Dagger']
     skip_dm, result = handler.handle("/inventory")
     assert skip_dm is True
-    assert "Inventory" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Inventory" in out
+    assert "Gold: 100 gp" in out
+    assert "Pack:" in out
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +334,173 @@ def test_worldstate_set_key(handler, dm):
 
 
 # ---------------------------------------------------------------------------
+# /teach and suggested actions
+# ---------------------------------------------------------------------------
+
+def test_teach_toggle(handler, capsys):
+    skip_dm, result = handler.handle("/teach")
+    assert skip_dm is True
+    assert result == ""
+    assert "Teaching mode is on." in capsys.readouterr().out
+
+
+def test_suggested_actions_include_beginner_prompts(handler):
+    suggestions = handler.get_suggested_actions()
+    assert "/attack Dagger" in suggestions
+    assert "/cast Fire Bolt" in suggestions
+    assert "/sheet" in suggestions
+    assert len(suggestions) == 4
+
+
+def test_turn_status_defaults_to_player(handler, capsys):
+    skip_dm, _ = handler.handle("/turn")
+    assert skip_dm is True
+    out = capsys.readouterr().out
+    assert "Round: 1" in out
+    assert "Active Turn: Wizard" in out
+
+
+def test_turn_advances_to_next_actor(player_sheet, dm):
+    npc = MagicMock()
+    npc.name = "Aria"
+    npc_sheet = MagicMock()
+    npc_sheet.initiative = 1
+    h = CommandHandler(player_sheet, {'wizard': player_sheet, 'aria': npc_sheet}, npcs={'aria': npc}, dm=dm)
+    assert h.current_actor_name == "Wizard"
+    h.advance_turn()
+    assert h.current_actor_name == "Aria"
+    h.advance_turn()
+    assert h.current_actor_name == "Wizard"
+    assert h.round_number == 2
+
+
+def test_npc_turn_command_runs_active_companion(player_sheet, dm, capsys):
+    npc = MagicMock()
+    npc.name = "Aria"
+    npc.generate_turn_action.return_value = "I check the doorway for trouble."
+    npc_sheet = MagicMock()
+    npc_sheet.initiative = 1
+    h = CommandHandler(player_sheet, {'wizard': player_sheet, 'aria': npc_sheet}, npcs={'aria': npc}, dm=dm)
+    h.advance_turn()
+    skip_dm, _ = h.handle("/npcturn")
+    assert skip_dm is True
+    npc.generate_turn_action.assert_called_once_with(dm.history, dm.world_state["scene_summary"] if "scene_summary" in dm.world_state else "No scene summary recorded yet.")
+    out = capsys.readouterr().out
+    assert "Aria:" in out
+    assert "I check the doorway for trouble." in out
+    assert "Active Turn: Wizard" in out
+    dm.add_history.assert_called_once_with("assistant", "Aria: I check the doorway for trouble.")
+
+
+def test_npc_turn_suggestions_when_companion_active(player_sheet, dm):
+    npc = MagicMock()
+    npc.name = "Aria"
+    npc_sheet = MagicMock()
+    npc_sheet.initiative = 1
+    h = CommandHandler(player_sheet, {'wizard': player_sheet, 'aria': npc_sheet}, npcs={'aria': npc}, dm=dm)
+    h.advance_turn()
+    suggestions = h.get_suggested_actions()
+    assert suggestions == ["/npcturn", "/endturn", "ask aria What do you want to do?", "/turn"]
+
+
+def test_encounter_start_builds_initiative_order(player_sheet, dm, capsys):
+    h = CommandHandler(player_sheet, {'wizard': player_sheet}, npcs={}, dm=dm)
+    with patch('dnd.cli.roll_dice', side_effect=[(15, "Rolling 1d20: (15) = 15"), (12, "Rolling 1d20: (12) = 12")]):
+        skip_dm, _ = h.handle("/encounter start Goblin:1")
+    assert skip_dm is True
+    assert h.encounter is not None
+    out = capsys.readouterr().out
+    assert "Encounter started against: Goblin." in out
+    assert "Active Turn: Wizard" in out
+    assert "[enemy]" in out
+
+
+def test_enemy_turn_forwards_to_dm(player_sheet, dm, capsys):
+    h = CommandHandler(player_sheet, {'wizard': player_sheet}, npcs={}, dm=dm)
+    h.encounter = {
+        "order": [
+            {"name": "Goblin", "type": "enemy", "modifier": 1, "roll": 14, "total": 15},
+            {"name": "Wizard", "type": "player", "modifier": 2, "roll": 10, "total": 12},
+        ],
+        "index": 0,
+        "round": 1,
+    }
+    skip_dm, prompt = h.handle("/enemyturn")
+    assert skip_dm is False
+    assert "Goblin" in prompt
+    assert "Enemy turn: Goblin" in capsys.readouterr().out
+
+
+def test_encounter_suggestions_for_enemy_turn(player_sheet, dm):
+    h = CommandHandler(player_sheet, {'wizard': player_sheet}, npcs={}, dm=dm)
+    h.encounter = {
+        "order": [
+            {"name": "Goblin", "type": "enemy", "modifier": 1, "roll": 14, "total": 15},
+            {"name": "Wizard", "type": "player", "modifier": 2, "roll": 10, "total": 12},
+        ],
+        "index": 0,
+        "round": 1,
+    }
+    assert h.get_suggested_actions() == ["/enemyturn", "/turn", "/rules attacks", "/sheet"]
+
+
+def test_encounter_end_clears_state(player_sheet, dm, capsys):
+    h = CommandHandler(player_sheet, {'wizard': player_sheet}, npcs={}, dm=dm)
+    h.encounter = {
+        "order": [{"name": "Goblin", "type": "enemy", "modifier": 1, "roll": 14, "total": 15}],
+        "index": 0,
+        "round": 1,
+    }
+    skip_dm, _ = h.handle("/encounter end")
+    assert skip_dm is True
+    assert h.encounter is None
+    dm.update_world_state.assert_called_with("encounter_enemies", "")
+    assert "Encounter ended." in capsys.readouterr().out
+
+
+def test_help_lists_topics(handler, capsys):
+    skip_dm, result = handler.handle("/help")
+    assert skip_dm is True
+    assert result == ""
+    out = capsys.readouterr().out
+    assert "Topics: commands, combat, spells, exploration" in out
+
+
+def test_help_topic_prints_entries(handler, capsys):
+    skip_dm, _ = handler.handle("/help combat")
+    assert skip_dm is True
+    out = capsys.readouterr().out
+    assert "Help: Combat" in out
+    assert "/attack <weapon>" in out
+
+
+def test_rules_topic_prints_reference(handler, capsys):
+    skip_dm, _ = handler.handle("/rules advantage")
+    assert skip_dm is True
+    out = capsys.readouterr().out
+    assert "Rules: Advantage" in out
+    assert "rolling two d20s" in out
+
+
+def test_journal_prints_world_state_summary(handler, capsys):
+    skip_dm, _ = handler.handle("/journal")
+    assert skip_dm is True
+    out = capsys.readouterr().out
+    assert "Current Location: tavern" in out
+    assert "Find the missing caravan" in out
+    assert "Investigate the old road" in out
+
+
+def test_map_prints_known_locations(handler, capsys):
+    skip_dm, _ = handler.handle("/map")
+    assert skip_dm is True
+    out = capsys.readouterr().out
+    assert "Region: Greenfields" in out
+    assert "Town square" in out
+    assert "north to the old road" in out
+
+
+# ---------------------------------------------------------------------------
 # /shop / /buy
 # ---------------------------------------------------------------------------
 
@@ -289,10 +533,12 @@ def test_unknown_command_skips_dm(handler, capsys):
 def test_ask_valid_npc(player_sheet, dm):
     mock_npc = MagicMock()
     mock_npc.name = "Aria"
+    mock_npc.generate_response.return_value = "We should check the north trail."
     h = CommandHandler(player_sheet, {}, npcs={'aria': mock_npc}, dm=dm)
     skip_dm, result = h.handle("ask aria What do you think?")
     assert skip_dm is True
     mock_npc.generate_response.assert_called_once_with("What do you think?", dm.history)
+    dm.add_history.assert_called_once_with("assistant", "Aria: We should check the north trail.")
 
 
 def test_ask_unknown_npc_skips_dm(handler, capsys):

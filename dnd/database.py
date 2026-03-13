@@ -2,10 +2,15 @@
 import sqlite3
 import json
 import random
+import re
+from datetime import datetime
+from pathlib import Path
 from .npc.prompts import NPC_ARCHETYPES
 from .data import SPELL_DATA
 
-DB_FILE = "dnd_game.db"
+DEFAULT_DB_FILE = "dnd_game.db"
+SAVE_DIR = Path("saves")
+DB_FILE = DEFAULT_DB_FILE
 
 def get_db_connection():
     """Establishes a connection to the SQLite database."""
@@ -13,13 +18,129 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-def seed_npcs():
-    """Seeds the database with two random NPC companions."""
+def _table_exists(cursor, table_name: str) -> bool:
+    row = cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+def _table_columns(cursor, table_name: str) -> set[str]:
+    return {row["name"] for row in cursor.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+def set_db_file(path: str):
+    global DB_FILE
+    DB_FILE = path
+
+def ensure_save_dir():
+    SAVE_DIR.mkdir(exist_ok=True)
+
+def list_save_files() -> list[Path]:
+    ensure_save_dir()
+    saves = sorted(SAVE_DIR.glob("*.db"))
+    legacy = Path(DEFAULT_DB_FILE)
+    if legacy.exists():
+        saves.append(legacy)
+    return saves
+
+def slugify_save_name(name: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", name.strip().lower()).strip("_")
+    return cleaned or datetime.now().strftime("save_%Y%m%d_%H%M%S")
+
+def create_save_path(name: str | None = None) -> str:
+    ensure_save_dir()
+    base_name = slugify_save_name(name) if name else datetime.now().strftime("save_%Y%m%d_%H%M%S")
+    candidate = SAVE_DIR / f"{base_name}.db"
+    suffix = 2
+    while candidate.exists():
+        candidate = SAVE_DIR / f"{base_name}_{suffix}.db"
+        suffix += 1
+    return str(candidate)
+
+def delete_save_file(path: str):
+    Path(path).unlink(missing_ok=True)
+
+def format_save_label(path: Path) -> str:
+    if path.name == DEFAULT_DB_FILE:
+        return "legacy_save"
+    return path.stem
+
+def create_game_session() -> int:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO game_sessions DEFAULT VALUES")
+    session_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return session_id
+
+def get_latest_session_id() -> int | None:
+    conn = get_db_connection()
+    row = conn.execute("SELECT id FROM game_sessions ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    return row["id"] if row else None
+
+def ensure_game_session() -> int:
+    latest = get_latest_session_id()
+    if latest is not None:
+        return latest
+    return create_game_session()
+
+def save_world_state(session_id: int, key: str, value):
+    conn = get_db_connection()
+    conn.execute(
+        """
+        INSERT INTO world_state (session_id, key, value) VALUES (?, ?, ?)
+        ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value
+        """,
+        (session_id, key, json.dumps(value)),
+    )
+    conn.commit()
+    conn.close()
+
+def load_world_state(session_id: int) -> dict:
+    conn = get_db_connection()
+    rows = conn.execute("SELECT key, value FROM world_state WHERE session_id = ?", (session_id,)).fetchall()
+    conn.close()
+    return {row["key"]: json.loads(row["value"]) for row in rows}
+
+def save_npc_memory(session_id: int, character_name: str, memory: str):
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO npc_memories (session_id, character_name, memory_text) VALUES (?, ?, ?)",
+        (session_id, character_name, memory),
+    )
+    conn.commit()
+    conn.close()
+
+def load_npc_memories(session_id: int, character_name: str, limit: int = 12) -> list[str]:
+    conn = get_db_connection()
+    rows = conn.execute(
+        """
+        SELECT memory_text
+        FROM npc_memories
+        WHERE session_id = ? AND character_name = ?
+        ORDER BY id DESC LIMIT ?
+        """,
+        (session_id, character_name, limit),
+    ).fetchall()
+    conn.close()
+    return [row["memory_text"] for row in reversed(rows)]
+
+def seed_npcs(num_companions: int = 2):
+    """Seeds the database with the requested number of random NPC companions."""
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    selected_npcs = random.sample(NPC_ARCHETYPES, 2)
-    print(f"Generating your companions: {selected_npcs[0]['name']} and {selected_npcs[1]['name']}.")
+    num_companions = max(0, min(num_companions, len(NPC_ARCHETYPES)))
+    if num_companions == 0:
+        print("Starting without companions.")
+        conn.close()
+        return
+
+    selected_npcs = random.sample(NPC_ARCHETYPES, num_companions)
+    companion_names = ", ".join(npc['name'] for npc in selected_npcs)
+    print(f"Generating your companions: {companion_names}.")
 
     for npc in selected_npcs:
         cursor.execute(
@@ -36,6 +157,12 @@ def initialize_database():
     """Initializes the database with all tables needed for the game."""
     conn = get_db_connection()
     cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS game_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );""")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS characters (
@@ -93,9 +220,116 @@ def initialize_database():
         duration_turns INTEGER DEFAULT -1,
         FOREIGN KEY (character_id) REFERENCES characters (id)
     );""")
-    
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS world_state (
+        session_id INTEGER NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL
+        ,PRIMARY KEY (session_id, key),
+        FOREIGN KEY (session_id) REFERENCES game_sessions (id)
+    );""")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS npc_memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        character_name TEXT NOT NULL,
+        memory_text TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES game_sessions (id)
+    );""")
+
+    _migrate_legacy_schema(cursor)
     conn.commit()
     conn.close()
+
+def _migrate_legacy_schema(cursor):
+    _ensure_character_columns(cursor)
+    _ensure_inventory_columns(cursor)
+    _migrate_world_state_table(cursor)
+    _migrate_npc_memories_table(cursor)
+
+def _ensure_character_columns(cursor):
+    if not _table_exists(cursor, "characters"):
+        return
+    columns = _table_columns(cursor, "characters")
+    additions = {
+        "spell_slots_l2_current": "INTEGER DEFAULT 0",
+        "spell_slots_l2_max": "INTEGER DEFAULT 0",
+        "spell_slots_l3_current": "INTEGER DEFAULT 0",
+        "spell_slots_l3_max": "INTEGER DEFAULT 0",
+        "gold": "INTEGER DEFAULT 0",
+        "is_concentrating": "INTEGER DEFAULT 0",
+        "is_raging": "INTEGER DEFAULT 0",
+        "is_player": "INTEGER DEFAULT 0",
+    }
+    for column_name, column_def in additions.items():
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE characters ADD COLUMN {column_name} {column_def}")
+
+def _ensure_inventory_columns(cursor):
+    if not _table_exists(cursor, "inventory"):
+        return
+    columns = _table_columns(cursor, "inventory")
+    if "equipped" not in columns:
+        cursor.execute("ALTER TABLE inventory ADD COLUMN equipped INTEGER DEFAULT 0")
+
+def _migrate_world_state_table(cursor):
+    if not _table_exists(cursor, "world_state"):
+        return
+    columns = _table_columns(cursor, "world_state")
+    if "session_id" in columns:
+        return
+
+    session_id = _ensure_game_session_row(cursor)
+    cursor.execute("ALTER TABLE world_state RENAME TO world_state_legacy")
+    cursor.execute("""
+    CREATE TABLE world_state (
+        session_id INTEGER NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (session_id, key),
+        FOREIGN KEY (session_id) REFERENCES game_sessions (id)
+    )""")
+    legacy_rows = cursor.execute("SELECT key, value FROM world_state_legacy").fetchall()
+    for row in legacy_rows:
+        cursor.execute(
+            "INSERT INTO world_state (session_id, key, value) VALUES (?, ?, ?)",
+            (session_id, row["key"], row["value"]),
+        )
+    cursor.execute("DROP TABLE world_state_legacy")
+
+def _migrate_npc_memories_table(cursor):
+    if not _table_exists(cursor, "npc_memories"):
+        return
+    columns = _table_columns(cursor, "npc_memories")
+    if "session_id" in columns:
+        return
+
+    session_id = _ensure_game_session_row(cursor)
+    cursor.execute("ALTER TABLE npc_memories RENAME TO npc_memories_legacy")
+    cursor.execute("""
+    CREATE TABLE npc_memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        character_name TEXT NOT NULL,
+        memory_text TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES game_sessions (id)
+    )""")
+    legacy_rows = cursor.execute("SELECT character_name, memory_text FROM npc_memories_legacy").fetchall()
+    for row in legacy_rows:
+        cursor.execute(
+            "INSERT INTO npc_memories (session_id, character_name, memory_text) VALUES (?, ?, ?)",
+            (session_id, row["character_name"], row["memory_text"]),
+        )
+    cursor.execute("DROP TABLE npc_memories_legacy")
+
+def _ensure_game_session_row(cursor) -> int:
+    row = cursor.execute("SELECT id FROM game_sessions ORDER BY id DESC LIMIT 1").fetchone()
+    if row:
+        return row["id"]
+    cursor.execute("INSERT INTO game_sessions DEFAULT VALUES")
+    return cursor.lastrowid
 
 def seed_spells():
     """Seeds the database with master spell data if the table is empty."""

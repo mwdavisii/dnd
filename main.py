@@ -1,38 +1,51 @@
 import re
 import os
 import json
+from pathlib import Path
 from dnd.dm.agent import DungeonMaster
-from dnd.dm.prompts import ADVENTURE_START_PROMPT
 from dnd.npc.agent import NPCAgent
 from dnd.npc.prompts import NPC_ARCHETYPES
 from dnd.game import roll_dice
 from dnd.character import CharacterSheet
-from dnd.database import initialize_database, get_db_connection, seed_npcs, seed_spells, DB_FILE
-from dnd.character_creator import run_character_creation, clear_screen
+from dnd.database import (
+    DB_FILE,
+    create_game_session,
+    create_save_path,
+    delete_save_file,
+    ensure_game_session,
+    format_save_label,
+    get_db_connection,
+    initialize_database,
+    list_save_files,
+    seed_npcs,
+    seed_spells,
+    set_db_file,
+)
+from dnd.character_creator import run_character_creation, clear_screen, choose_companion_count
 from dnd.data import STORE_INVENTORY # Import STORE_INVENTORY
 from dnd.cli import CommandHandler
+from dnd.ui import banner, prompt_marker, section, speaker, style, wrap_text
 
 def main():
     """Main function to run the D&D game."""
     
     player_name = "Player" # Default name
+    session_id = None
 
     # --- Game Setup ---
-    if os.path.exists(DB_FILE):
-        choice = ""
-        while choice.lower() not in ['c', 'n']:
-            choice = input("Saved game found. (C)ontinue or start a (N)ew Game? > ")
-        
-        if choice.lower() == 'n':
-            os.remove(DB_FILE)
-            clear_screen()
-            print("Starting a new adventure...")
-    
-    if not os.path.exists(DB_FILE):
-        initialize_database()
+    selected_save = choose_save_file()
+    set_db_file(selected_save)
+    is_new_save = not os.path.exists(selected_save)
+    initialize_database()
+
+    if is_new_save:
         seed_spells()
+        session_id = create_game_session()
         player_name = run_character_creation()
-        seed_npcs()
+        companion_count = choose_companion_count(len(NPC_ARCHETYPES))
+        seed_npcs(companion_count)
+    else:
+        session_id = ensure_game_session()
 
     # --- Dynamic Character Loading ---
     conn = get_db_connection()
@@ -57,29 +70,36 @@ def main():
             npcs[name.lower()] = NPCAgent(
                 name=archetype['name'],
                 class_name=archetype['class'],
-                system_prompt=archetype['system_prompt']
+                system_prompt=archetype['system_prompt'],
+                session_id=session_id,
             )
             companion_descriptions.append(f"{archetype['name']} the {archetype['class'].lower()}")
     
-    dm = DungeonMaster()
+    dm = DungeonMaster(session_id=session_id)
+    dm.update_world_state("player_name", player_name)
     handler = CommandHandler(player_sheet, character_sheets, npcs, dm)
 
     # --- Game Start ---
     clear_screen()
-    print("Welcome to your D&D adventure!")
-    print(f"You are {player_name}.")
-    print(f"Your stats:\n{player_sheet}")
+    print(banner("D&D Text Adventure"))
+    print(style("Welcome to your D&D adventure!", "gold", bold=True))
+    print(f"{style('Hero', 'cyan', bold=True)} {player_name}")
+    print(f"{section('Character Sheet')}\n{player_sheet}")
     if companion_descriptions:
-        print(f"Your companions are {', and '.join(companion_descriptions)}.")
-    print("-" * 20)
-    print(ADVENTURE_START_PROMPT)
+        print(f"{style('Companions', 'magenta', bold=True)} {', and '.join(companion_descriptions)}.")
+    else:
+        print(style("You begin this adventure without companions.", "gray"))
+    print(style("─" * 40, "gray"))
+    print(style(wrap_text(dm.generate_opening_scene(player_sheet, npcs)), "parchment"))
+    handler.print_turn_status()
+    handler.print_suggested_actions()
 
     # --- Main Game Loop ---
     while True:
         try:
-            user_input = input("\n> ")
+            user_input = input(f"\n{prompt_marker()}")
             if user_input.lower() in ["quit", "exit"]:
-                print("The adventure ends... for now.")
+                print(style("The adventure ends... for now.", "red", bold=True))
                 break
 
             if user_input.lower().startswith("/") or user_input.lower().startswith("ask "):
@@ -89,15 +109,18 @@ def main():
                 if not user_input:
                     continue
 
-            print("\nDM: ", end='')
+            print(f"\n{speaker('DM', 'gold')} ", end="")
             response = dm.generate_response(user_input, player_sheet, npcs)
+            scene_memory = build_scene_memory(user_input, response)
+            dm.update_world_state("scene_summary", scene_memory)
+            for npc in npcs.values():
+                npc.remember_scene(scene_memory)
 
             # Check for level up
             if "<level_up />" in response:
-                print("\n--- LEVEL UP! ---")
+                print(f"\n{style('*** LEVEL UP! ***', 'green', bold=True)}")
                 for sheet in character_sheets.values():
                     sheet.level_up()
-                print("-----------------")
             
             # Check for gold award
             gold_match = re.search(r'<award_gold amount="(\d+)"(?: reason="[^"]*")? />', response)
@@ -107,9 +130,13 @@ def main():
                 # Remove tag from DM response for cleaner display
                 response = re.sub(r'<award_gold amount="(\d+)"(?: reason="[^"]*")? />', '', response).strip()
 
+            handler.advance_turn()
+            handler.print_turn_status()
+            handler.print_suggested_actions()
+
 
         except (KeyboardInterrupt, EOFError):
-            print("\nThe adventure ends... for now.")
+            print(f"\n{style('The adventure ends... for now.', 'red', bold=True)}")
             break
 
         update_condition_durations()
@@ -138,6 +165,44 @@ def update_condition_durations():
     
     conn.commit()
     conn.close()
+
+def build_scene_memory(user_input: str, response: str) -> str:
+    clean_response = " ".join(response.split())
+    if len(clean_response) > 220:
+        clean_response = clean_response[:217] + "..."
+    return f"Player action: {user_input} | Outcome: {clean_response}"
+
+def choose_save_file() -> str:
+    saves = list_save_files()
+    if not saves:
+        return create_save_path()
+
+    while True:
+        clear_screen()
+        print(banner("Save Files"))
+        for index, save_path in enumerate(saves, start=1):
+            print(f"{style(str(index) + '.', 'cyan', bold=True)} {style(format_save_label(save_path), 'silver', bold=True)}")
+        print(style("N.", "green", bold=True) + " " + style("Create a new save", "silver"))
+        print(style("D.", "red", bold=True) + " " + style("Delete an existing save", "silver"))
+        choice = input(prompt_marker()).strip().lower()
+
+        if choice == "n":
+            save_name = input(f"{style('Enter a save name (leave blank for timestamp)', 'silver')} {prompt_marker()}").strip()
+            return create_save_path(save_name or None)
+
+        if choice == "d":
+            delete_choice = input(f"{style('Enter the number of the save to delete', 'silver')} {prompt_marker()}").strip()
+            if delete_choice.isdigit():
+                idx = int(delete_choice) - 1
+                if 0 <= idx < len(saves):
+                    delete_save_file(str(saves[idx]))
+                    saves = list_save_files()
+            continue
+
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(saves):
+                return str(saves[idx])
 
 if __name__ == "__main__":
     main()

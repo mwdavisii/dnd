@@ -1,75 +1,66 @@
 # D&D Text Adventure
 
-A text-based D&D game powered by a local LLM (via Ollama). An AI Dungeon Master narrates the story while you explore, fight, and cast spells alongside NPC companions.
+A text-based D&D learning game powered by a local Ollama model. You create a character, pick `0-5` AI companions, explore through free-form prompts, and use built-in commands for rules help, transparent combat math, and encounter tracking.
 
 ## Features
 
-- **AI Dungeon Master** - Dynamic storytelling powered by Ollama
-- **Character Creation** - Build your character with stats, class, and equipment
-- **NPC Companions** - AI-driven party members you can talk to
-- **Combat System** - Attack rolls, damage, and spell casting with slot management
-- **Dice Rolling** - Standard D&D dice notation (`/roll 2d6+3`)
-- **Persistent Saves** - SQLite database saves your game state
+- AI Dungeon Master for narration and scene responses
+- AI-generated opening scene tailored to the player and companions
+- Character creation with class, background, and stat choices
+- Optional companion party from `0` to `5` NPCs
+- Teaching mode with rules-aware attack and spell breakdowns
+- Guided suggested actions for new players
+- `/help`, `/rules`, `/journal`, and `/map` for in-game reference
+- Encounter-scoped initiative with player, companion, and enemy turns
+- file-based save slots under `saves/` plus session-scoped world/NPC memory
 
 ## Requirements
 
-- Python 3.13+
+- Python `3.13+`
 - [Ollama](https://ollama.com/) running locally
+- A local model configured in `.env`, for example `qwen2.5`
 
 ## Setup
 
 ```bash
-# Create and activate a virtual environment
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Configure Ollama connection (defaults shown)
 cp .env.example .env
-# Edit .env to set OLLAMA_HOST and OLLAMA_MODEL
 ```
 
-## Usage
+Set `OLLAMA_HOST` and `OLLAMA_MODEL` in `.env`, then start the game:
 
 ```bash
-python main.py
+python3 main.py
 ```
 
-### In-Game Commands
+At startup, you can pick an existing save, create a named save, or delete a save file entirely. If you leave the name blank, the game creates a timestamped save name automatically.
 
-| Command | Description |
-|---|---|
-| `/roll <dice>` | Roll dice (e.g. `/roll 1d20+5`) |
-| `/sheet` | View your character sheet |
-| `/attack <weapon>` | Attack with a weapon in your inventory |
-| `/cast <spell>` | Cast a known spell |
-| `ask <npc> <message>` | Talk to an NPC companion |
-| `quit` | Save and exit |
+## Core Commands
 
-Anything else you type is sent to the Dungeon Master as a free-form action.
+- `/teach on` toggles rules explanations.
+- `/attack <weapon>` shows to-hit and damage math.
+- `/cast <spell>` shows spell math and then casts.
+- `/help <topic>` and `/rules <topic>` show quick references.
+- `/journal`, `/map`, and `/inventory` review current state.
+- `ask <npc> <message>` talks directly to a companion.
+
+## Encounter Commands
+
+- `/encounter start Goblin, Orc:1` starts initiative and optionally sets enemy initiative modifiers.
+- `/turn` shows the active actor and current order.
+- `/npcturn` runs the active companion turn.
+- `/enemyturn` prompts the DM for the active enemy turn.
+- `/endturn` advances to the next actor.
+- `/encounter end` exits combat mode.
 
 ## Testing
 
+Run the full test suite with:
+
 ```bash
-pytest
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q
 ```
 
-## Project Structure
-
-```
-dnd/
-├── main.py              # Game entry point and main loop
-├── dnd/
-│   ├── character.py     # CharacterSheet class
-│   ├── character_creator.py  # Interactive character creation
-│   ├── database.py      # SQLite persistence
-│   ├── data.py          # Static game data
-│   ├── game.py          # Dice rolling and game utilities
-│   ├── dm/              # Dungeon Master AI agent
-│   └── npc/             # NPC AI agents
-└── tests/
-    ├── test_character.py
-    └── test_game.py
-```
+Current project coverage is command handling, character logic, NPC behavior, and database-backed gameplay helpers.

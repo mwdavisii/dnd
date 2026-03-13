@@ -37,6 +37,22 @@ def _handle_spells(conn, char_id, class_info):
             cursor.execute("INSERT INTO character_spells (character_id, spell_id) VALUES (?, ?)", (char_id, spell_id))
         else: print(f"Warning: Spell '{spell_name}' not found in master spell list.")
 
+def choose_companion_count(max_companions: int) -> int:
+    clear_screen()
+    print("--- Choose your party size ---")
+    print("0 companions: explore alone and watch the DM carry the full scene.")
+    print(f"1-{max_companions} companions: add AI party members you can talk to with 'ask <npc> ...'.")
+    choice = None
+    while choice is None:
+        raw = input(f"How many companions do you want? (0-{max_companions})\n> ").strip()
+        try:
+            parsed = int(raw)
+            if 0 <= parsed <= max_companions:
+                choice = parsed
+        except ValueError:
+            continue
+    return choice
+
 def run_character_creation():
     conn = get_db_connection()
     cursor = conn.cursor()
