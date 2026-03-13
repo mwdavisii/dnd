@@ -143,22 +143,6 @@ def test_extract_structured_updates_strips_reward_tags(monkeypatch, dm_db):
     assert "<level_up" not in cleaned
 
 
-def test_update_story_progress_tracks_resolved_events_and_location(monkeypatch, dm_db):
-    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
-    dm = DungeonMaster(session_id=dm_db)
-
-    dm._update_story_progress(
-        "deliver the letter",
-        "The mayor reads the letter with growing concern. This is serious. We need to rally the guards. You reach the edge of the Whispering Woods.",
-    )
-
-    assert "letter_delivered" in dm.world_state["resolved_events"]
-    assert "mayor_warned" in dm.world_state["resolved_events"]
-    assert "defenders_rallied" in dm.world_state["resolved_events"]
-    assert dm.world_state["current_location"] == "Whispering Woods edge"
-    assert dm.world_state["last_progress_events"]
-
 
 def test_encounter_guard_tag_ignored_when_guards_are_helping(monkeypatch, dm_db):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
@@ -372,3 +356,70 @@ def test_generate_arc_skips_if_arc_already_exists(monkeypatch, dm_db):
         dm.generate_arc("Some opening scene.")
 
     mock_post.assert_not_called()
+
+
+def test_evaluate_beat_advances_on_yes(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("current_beat", "hook")
+    dm.update_world_state("story_arc", {
+        "hook": {"goal": "Follow the man.", "key_npcs": [], "success_condition": "Party confronts the cloaked man."},
+        "complication": {"goal": "Dig deeper.", "key_npcs": [], "success_condition": "Party finds the secret."},
+    })
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "YES"}
+    fake_response.raise_for_status.return_value = None
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        dm._evaluate_beat("You catch up to the cloaked man and confront him in the alley.")
+
+    assert dm.world_state["current_beat"] == "complication"
+
+
+def test_evaluate_beat_stays_on_no(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("current_beat", "hook")
+    dm.update_world_state("story_arc", {
+        "hook": {"goal": "Follow the man.", "key_npcs": [], "success_condition": "Party confronts the cloaked man."},
+        "complication": {"goal": "Dig deeper.", "key_npcs": [], "success_condition": "Party finds the secret."},
+    })
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "NO"}
+    fake_response.raise_for_status.return_value = None
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        dm._evaluate_beat("You look at a book in a shop window.")
+
+    assert dm.world_state["current_beat"] == "hook"
+
+
+def test_evaluate_beat_noop_when_no_arc(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    with patch("dnd.dm.agent.requests.post") as mock_post:
+        dm._evaluate_beat("Something happened.")
+
+    mock_post.assert_not_called()
+
+
+def test_evaluate_beat_does_not_advance_past_resolution(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("current_beat", "resolution")
+    dm.update_world_state("story_arc", {
+        "resolution": {"goal": "End it.", "key_npcs": [], "success_condition": "Story ends."},
+    })
+
+    with patch("dnd.dm.agent.requests.post") as mock_post:
+        dm._evaluate_beat("The adventure concludes.")
+
+    mock_post.assert_not_called()
+    assert dm.world_state["current_beat"] == "resolution"

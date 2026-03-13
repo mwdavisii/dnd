@@ -147,6 +147,46 @@ class DungeonMaster:
         self.update_world_state("story_arc", fallback)
         self.update_world_state("current_beat", "hook")
 
+    def _evaluate_beat(self, response: str) -> None:
+        """Check if the current story beat is complete and advance if so."""
+        story_arc = self.world_state.get("story_arc")
+        if not story_arc:
+            return
+
+        beat_order = ["hook", "complication", "climax", "resolution"]
+        current_beat = str(self.world_state.get("current_beat", "hook") or "hook")
+        if current_beat not in beat_order:
+            return
+        current_idx = beat_order.index(current_beat)
+        if current_idx >= len(beat_order) - 1:
+            return  # Already at resolution
+
+        success_condition = str(story_arc.get(current_beat, {}).get("success_condition", "") or "")
+        if not success_condition:
+            return
+
+        prompt = BEAT_EVALUATION_PROMPT.format(
+            success_condition=success_condition,
+            dm_response=response[:600],
+        )
+        try:
+            eval_response = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                },
+                timeout=(5, 30),
+            )
+            eval_response.raise_for_status()
+            raw = eval_response.json().get("response", "").strip().lower()
+            if raw.startswith("yes"):
+                next_beat = beat_order[current_idx + 1]
+                self.update_world_state("current_beat", next_beat)
+        except requests.exceptions.RequestException:
+            pass  # Silently skip on network error
+
     def generate_response(self, prompt: str, player_sheet: CharacterSheet, npcs: dict) -> str:
         self.add_history("user", prompt)
 
@@ -194,7 +234,7 @@ class DungeonMaster:
             final_response = "".join(full_response)
             cleaned_response = self._sanitize_dm_response(final_response, prompt)
             cleaned_response = self._extract_structured_updates(cleaned_response)
-            self._update_story_progress(prompt, cleaned_response)
+            self._evaluate_beat(cleaned_response)
             self.add_history("assistant", cleaned_response)
             print(apply_base_style(self._format_narration(cleaned_response), "parchment"))
             self._print_pending_encounter_hint()
@@ -433,33 +473,6 @@ class DungeonMaster:
     def _normalize_for_compare(self, text: str) -> str:
         normalized = re.sub(r"[^a-z0-9\s]", " ", text.lower())
         return " ".join(normalized.split())
-
-    def _update_story_progress(self, user_input: str, response: str) -> None:
-        resolved_events = list(self.world_state.get("resolved_events", []))
-        new_events = []
-
-        def add_event(event: str):
-            if event not in resolved_events:
-                resolved_events.append(event)
-                new_events.append(event)
-
-        lowered = response.lower()
-        if "letter" in lowered and any(phrase in lowered for phrase in ("hands the letter", "reads it", "reads the letter", "deliver the letter", "the letter,")):
-            add_event("letter_delivered")
-        if ("mayor" in lowered and any(phrase in lowered for phrase in ("urgent news", "warn him", "goblins are raiding", "this is serious"))) or "mayor was warned" in lowered:
-            add_event("mayor_warned")
-        if any(phrase in lowered for phrase in ("gather the defenders", "rally the guards", "prepare a response", "town's defenders")):
-            add_event("defenders_rallied")
-        if any(phrase in lowered for phrase in ("reach the edge of the whispering woods", "entrance to the whispering woods", "edge of the whispering woods")):
-            self.update_world_state("current_location", "Whispering Woods edge")
-        elif any(phrase in lowered for phrase in ("town gates", "push them open", "wooden doors creak")):
-            self.update_world_state("current_location", "Town gates")
-        elif "mayor's office" in lowered or "mayor's chambers" in lowered:
-            self.update_world_state("current_location", "Mayor's office")
-
-        if new_events:
-            self.update_world_state("resolved_events", resolved_events[-12:])
-        self.update_world_state("last_progress_events", new_events)
 
     def _infer_opening_world_state(self, opening_scene: str):
         location_match = re.search(r"\b(?:in|at|outside|within) the ([A-Z][A-Za-z' -]+)", opening_scene)
