@@ -5,6 +5,7 @@ import json
 
 from dnd.database import create_game_session, initialize_database
 from dnd.dm.agent import DungeonMaster
+from dnd.spectator import build_turn_context, format_turn_context
 
 
 @pytest.fixture
@@ -454,3 +455,50 @@ def test_generate_response_includes_current_beat_goal(monkeypatch, dm_db, player
     prompt = mock_post.call_args.kwargs["json"]["prompt"]
     assert "Follow the cloaked man to discover where he is going." in prompt
     assert "Current beat goal:" in prompt
+
+
+def test_build_turn_context_includes_current_beat_goal(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+
+    world_state = {
+        "story_arc": {
+            "hook": {
+                "goal": "Follow the cloaked man.",
+                "key_npcs": [],
+                "success_condition": "Party confronts the cloaked man.",
+            }
+        },
+        "current_beat": "hook",
+        "target_rounds": 10,
+        "current_round": 1,
+        "remaining_rounds": 9,
+    }
+
+    ctx = build_turn_context(world_state, "Kraton", "player", "No summary yet.")
+    assert ctx["current_beat_goal"] == "Follow the cloaked man."
+
+
+def test_format_turn_context_includes_beat_goal():
+    ctx = {
+        "actor_name": "Kraton",
+        "actor_type": "player",
+        "location": "Graysfall",
+        "objective": "Follow the man.",
+        "story_phase": "opening",
+        "current_round": 1,
+        "target_rounds": 10,
+        "remaining_rounds": 9,
+        "phase_goal": "Commit to the hook.",
+        "scene_momentum": "steady",
+        "immediate_danger": "None",
+        "scene_summary": "The scene begins.",
+        "recent_party_actions": [],
+        "last_progress_events": [],
+        "resolved_events": [],
+        "notable_npcs": [],
+        "nearby_locations": [],
+        "current_beat_goal": "Follow the cloaked man.",
+    }
+    formatted = format_turn_context(ctx)
+    assert "Current beat goal: Follow the cloaked man." in formatted
