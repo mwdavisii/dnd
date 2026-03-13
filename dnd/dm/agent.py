@@ -289,6 +289,7 @@ class DungeonMaster:
             f"{format_turn_context(turn_context)}\n"
             f"Submitted action: {prompt}\n"
             f"Pending roll: {pending_roll_text}\n"
+            f"Current beat goal: {self._current_beat_goal()}\n"
             f"Arc pressure: {self._arc_pressure_instruction()}\n"
             f"Objective lock: {self._objective_lock_instruction()}"
         )
@@ -400,6 +401,13 @@ class DungeonMaster:
         if isinstance(pending_roll, dict):
             return f"Pending roll: {pending_roll.get('label', 'Resolve the requested roll.')}"
         return "No immediate danger recorded."
+
+    def _current_beat_goal(self) -> str:
+        """Return the goal for the current story beat."""
+        story_arc = self.world_state.get("story_arc") or {}
+        current_beat = str(self.world_state.get("current_beat", "hook") or "hook")
+        beat_data = story_arc.get(current_beat) or {}
+        return str(beat_data.get("goal", "") or "")
 
     def _arc_pressure_instruction(self) -> str:
         story_phase = str(self.world_state.get("story_phase", "opening") or "opening")

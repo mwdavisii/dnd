@@ -423,3 +423,34 @@ def test_evaluate_beat_does_not_advance_past_resolution(monkeypatch, dm_db):
 
     mock_post.assert_not_called()
     assert dm.world_state["current_beat"] == "resolution"
+
+
+def test_generate_response_includes_current_beat_goal(monkeypatch, dm_db, player_sheet):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("story_arc", {
+        "hook": {
+            "goal": "Follow the cloaked man to discover where he is going.",
+            "key_npcs": ["Cloaked Man"],
+            "success_condition": "Party confronts the cloaked man.",
+        }
+    })
+    dm.update_world_state("current_beat", "hook")
+    dm.update_world_state("target_rounds", 10)
+    dm.update_world_state("remaining_rounds", 9)
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.iter_lines.return_value = [
+        b'{"response":"The cloaked man turns a corner.","done":false}',
+        b'{"done":true}',
+    ]
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response) as mock_post:
+        with patch.object(dm, "_evaluate_beat"):
+            dm.generate_response("Follow him.", player_sheet, {})
+
+    prompt = mock_post.call_args.kwargs["json"]["prompt"]
+    assert "Follow the cloaked man to discover where he is going." in prompt
+    assert "Current beat goal:" in prompt
