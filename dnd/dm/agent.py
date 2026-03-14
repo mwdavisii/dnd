@@ -14,6 +14,15 @@ from dnd.ui import apply_base_style, highlight_quotes, style, thinking_message, 
 
 load_dotenv()
 
+_BEAT_DEADLINES = {"hook": 0.25, "complication": 0.65, "climax": 0.87}
+_BEAT_PHASE = {
+    "hook": "opening",
+    "complication": "midgame",
+    "climax": "climax",
+    "resolution": "resolution",
+}
+
+
 class DungeonMaster:
     def __init__(self, session_id: int):
         self.session_id = session_id
@@ -152,6 +161,17 @@ class DungeonMaster:
         self.update_world_state("story_arc", fallback)
         self.update_world_state("current_beat", "hook")
 
+    def _beat_past_deadline(self, current_beat: str) -> bool:
+        """Return True if the current round has passed the beat's hard deadline."""
+        current_round = int(self.world_state.get("current_round", 1) or 1)
+        target_rounds = int(self.world_state.get("target_rounds", 0) or 0)
+        if target_rounds <= 0:
+            return False
+        deadline_ratio = _BEAT_DEADLINES.get(current_beat)
+        if deadline_ratio is None:
+            return False
+        return (current_round / target_rounds) >= deadline_ratio
+
     def _evaluate_beat(self, response: str) -> None:
         """Check if the current story beat is complete and advance if so."""
         story_arc = self.world_state.get("story_arc")
@@ -166,33 +186,38 @@ class DungeonMaster:
         if current_idx >= len(beat_order) - 1:
             return  # Already at resolution
 
-        success_condition = str(story_arc.get(current_beat, {}).get("success_condition", "") or "")
-        if not success_condition:
-            return
+        should_advance = self._beat_past_deadline(current_beat)
 
-        prompt = BEAT_EVALUATION_PROMPT.format(
-            success_condition=success_condition,
-            dm_response=response[:900],
-        )
-        try:
-            _t0 = time.time()
-            eval_response = requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                },
-                timeout=(5, 30),
-            )
-            eval_response.raise_for_status()
-            print(style(f"[Beat: {time.time() - _t0:.1f}s]", "gray", dim=True))
-            raw = eval_response.json().get("response", "").strip().lower()
-            if raw.startswith("yes"):
-                next_beat = beat_order[current_idx + 1]
-                self.update_world_state("current_beat", next_beat)
-        except requests.exceptions.RequestException:
-            pass  # Silently skip on network error
+        if not should_advance:
+            success_condition = str(story_arc.get(current_beat, {}).get("success_condition", "") or "")
+            if success_condition:
+                prompt = BEAT_EVALUATION_PROMPT.format(
+                    success_condition=success_condition,
+                    dm_response=response[:900],
+                )
+                try:
+                    _t0 = time.time()
+                    eval_response = requests.post(
+                        f"{self.ollama_host}/api/generate",
+                        json={
+                            "model": self.ollama_model,
+                            "prompt": prompt,
+                            "stream": False,
+                        },
+                        timeout=(5, 30),
+                    )
+                    eval_response.raise_for_status()
+                    print(style(f"[Beat: {time.time() - _t0:.1f}s]", "gray", dim=True))
+                    raw = eval_response.json().get("response", "").strip().lower()
+                    if raw.startswith("yes"):
+                        should_advance = True
+                except requests.exceptions.RequestException:
+                    pass  # Silently skip on network error
+
+        if should_advance:
+            next_beat = beat_order[current_idx + 1]
+            self.update_world_state("current_beat", next_beat)
+            self.update_world_state("story_phase", _BEAT_PHASE[next_beat])
 
     def generate_response(self, prompt: str, player_sheet: CharacterSheet, npcs: dict) -> tuple[str, str]:
         self.add_history("user", prompt)

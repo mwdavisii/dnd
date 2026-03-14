@@ -568,3 +568,74 @@ def test_format_turn_context_includes_beat_goal():
     }
     formatted = format_turn_context(ctx)
     assert "Current beat goal: Follow the cloaked man." in formatted
+
+
+def test_beat_past_deadline_returns_true_when_round_exceeds_ratio(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("target_rounds", 10)
+    dm.update_world_state("current_round", 4)  # 4/10 = 0.40 > hook deadline 0.25
+    assert dm._beat_past_deadline("hook") is True
+
+
+def test_beat_past_deadline_returns_false_before_deadline(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("target_rounds", 10)
+    dm.update_world_state("current_round", 2)  # 2/10 = 0.20 < hook deadline 0.25
+    assert dm._beat_past_deadline("hook") is False
+
+
+def test_beat_past_deadline_returns_false_when_no_target(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("target_rounds", 0)
+    dm.update_world_state("current_round", 5)
+    assert dm._beat_past_deadline("hook") is False
+
+
+def test_evaluate_beat_force_advances_past_deadline(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("target_rounds", 10)
+    dm.update_world_state("current_round", 4)  # past hook deadline
+    dm.update_world_state("current_beat", "hook")
+    dm.update_world_state("story_arc", {
+        "hook": {"goal": "Find the threat", "key_npcs": [], "success_condition": "Threat identified"},
+        "complication": {"goal": "Deal with it", "key_npcs": [], "success_condition": "Complication resolved"},
+        "climax": {"goal": "Confront", "key_npcs": [], "success_condition": "Confronted"},
+        "resolution": {"goal": "Wrap up", "key_npcs": [], "success_condition": "Done"},
+    })
+    # No LLM call should be needed — deadline triggers it
+    dm._evaluate_beat("The party investigates the mill.")
+    assert dm.world_state["current_beat"] == "complication"
+    assert dm.world_state["story_phase"] == "midgame"
+
+
+def test_evaluate_beat_syncs_story_phase_on_llm_advance(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("target_rounds", 10)
+    dm.update_world_state("current_round", 1)  # well before deadline
+    dm.update_world_state("current_beat", "hook")
+    dm.update_world_state("story_arc", {
+        "hook": {"goal": "Find the threat", "key_npcs": [], "success_condition": "Threat identified"},
+        "complication": {"goal": "Deal with it", "key_npcs": [], "success_condition": "Complication resolved"},
+        "climax": {"goal": "Confront", "key_npcs": [], "success_condition": "Confronted"},
+        "resolution": {"goal": "Wrap up", "key_npcs": [], "success_condition": "Done"},
+    })
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.json.return_value = {"response": "YES"}
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        dm._evaluate_beat("The party identifies the goblin threat.")
+
+    assert dm.world_state["current_beat"] == "complication"
+    assert dm.world_state["story_phase"] == "midgame"
