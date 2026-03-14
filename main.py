@@ -415,7 +415,8 @@ def run_initial_setup() -> tuple[bool, int, float, str]:
 def choose_save_file() -> str:
     saves = list_save_files()
     if not saves:
-        return create_save_path()
+        save_name = input(f"{style('Name your adventure (leave blank for timestamp)', 'silver')} {prompt_marker()}").strip()
+        return create_save_path(save_name or None)
 
     while True:
         clear_screen()

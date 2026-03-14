@@ -1,6 +1,12 @@
+import os
+import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 from datetime import datetime
+import pytest
+from dnd.spectator import build_turn_context, detect_scene_stall, validate_turn_output
 
 from main import (
     choose_save_file,
@@ -10,6 +16,15 @@ from main import (
     should_wait_before_spectator_turn,
     strip_ansi,
 )
+
+
+def test_choose_save_file_prompts_for_name_when_no_saves(monkeypatch, tmp_path):
+    monkeypatch.setattr("main.list_save_files", lambda: [])
+    inputs = iter(["my_adventure"])
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    monkeypatch.setattr("main.create_save_path", lambda name=None: str(tmp_path / f"{name}.db"))
+    result = choose_save_file()
+    assert "my_adventure" in result
 
 
 def test_choose_save_file_shows_created_and_last_played(monkeypatch, capsys, tmp_path):
@@ -85,3 +100,149 @@ def test_create_transcript_path_uses_markdown_and_save_label():
 
 def test_strip_ansi_removes_terminal_sequences():
     assert strip_ansi("\033[31mDanger\033[0m") == "Danger"
+
+
+def test_build_turn_context_uses_structured_world_state():
+    context = build_turn_context(
+        {
+            "location": "Willowmere",
+            "objective": "Question the guard and inspect the forge.",
+            "story_phase": "opening",
+            "current_round": 3,
+            "target_rounds": 10,
+            "remaining_rounds": 7,
+            "notable_npcs": ["Guard", "Elara"],
+            "nearby_locations": ["Forge", "Alehouse"],
+            "last_progress_events": ["goblin_revealed"],
+        },
+        actor_name="Kraton",
+        actor_type="player",
+        scene_summary="The square is tense.",
+        recent_party_actions=["Lyra acted: I circle the forge."],
+    )
+
+    assert context["location"] == "Willowmere"
+    assert context["objective"] == "Question the guard and inspect the forge."
+    assert context["current_round"] == 3
+    assert context["recent_party_actions"] == ["Lyra acted: I circle the forge."]
+    assert context["last_progress_events"] == ["goblin_revealed"]
+    assert "question" in context["focus_keywords"] or "guard" in context["focus_keywords"]
+
+
+def test_validate_turn_output_rejects_recent_duplicates():
+    action = validate_turn_output(
+        "I circle the forge.",
+        actor_name="Kraton",
+        actor_type="player",
+        recent_party_actions=["Kraton acted: I circle the forge."],
+    )
+
+    assert action == "Kraton studies the scene, moves toward the clearest lead, and stays ready to react."
+
+
+def test_validate_turn_output_rejects_action_that_abandons_active_hook():
+    turn_context = build_turn_context(
+        {
+            "objective": "Follow the cloaked man before he leaves town.",
+            "story_phase": "opening",
+            "current_round": 1,
+            "target_rounds": 10,
+            "remaining_rounds": 9,
+            "nearby_locations": ["Inn", "Town edge"],
+            "notable_npcs": ["Cloaked man"],
+        },
+        actor_name="Kraton",
+        actor_type="player",
+        scene_summary="A cloaked man hurries toward the edge of town.",
+        recent_party_actions=[],
+    )
+
+    action = validate_turn_output(
+        "Inspect a dusty old book in a nearby shop window.",
+        actor_name="Kraton",
+        actor_type="player",
+        recent_party_actions=[],
+        turn_context=turn_context,
+    )
+
+    assert "main lead" in action.lower() or "town edge" in action.lower()
+
+
+def test_detect_scene_stall_flags_near_duplicate_without_progress():
+    stalled = detect_scene_stall(
+        "Last turn: take a cautious step forward Consequences: The shadows stir near the clearing.",
+        "Last turn: take another cautious step forward Consequences: The shadows stir near the clearing.",
+        [],
+    )
+
+    assert stalled is True
+
+
+def test_detect_scene_stall_allows_progress_events():
+    stalled = detect_scene_stall(
+        "Last turn: question Eli Consequences: He warns that the mayor was taken.",
+        "Last turn: push toward the gate Consequences: A goblin horn sounds from the battlements.",
+        ["mayor_warned"],
+    )
+
+    assert stalled is False
+
+
+@pytest.mark.ollama
+@pytest.mark.skipif(
+    not os.getenv("OLLAMA_HOST") or not os.getenv("OLLAMA_MODEL"),
+    reason="requires a configured Ollama server and model",
+)
+def test_main_executes_short_spectator_game_with_two_npcs(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    scripted_input = "\n".join(
+        [
+            "n",      # no transcript
+            "2",      # spectator mode
+            "1",      # short session (10 rounds)
+            "0.01",   # spectator autoplay
+            "Kraton",
+            "",
+            "",
+            "10",     # Sorcerer
+            "3",      # Sage
+            "1",      # +2/+1
+            "INT",
+            "WIS",
+            "",       # begin adventure
+            "2",      # two companions
+        ]
+    ) + "\n"
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root)
+    env.setdefault("TERM", "dumb")
+
+    result = subprocess.run(
+        [sys.executable, str(repo_root / "main.py")],
+        input=scripted_input,
+        text=True,
+        capture_output=True,
+        cwd=tmp_path,
+        env=env,
+        timeout=240,
+        check=False,
+    )
+
+    if "Operation not permitted" in result.stderr and "localhost" in result.stderr:
+        pytest.skip("sandbox blocked the subprocess from connecting to local Ollama")
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "Spectator mode is on" in result.stdout
+    assert "Spectator run finished: reached the configured round limit." in result.stdout
+
+    save_files = list((tmp_path / "saves").glob("*.db"))
+    assert len(save_files) == 1
+
+    conn = sqlite3.connect(save_files[0])
+    player_count = conn.execute("SELECT COUNT(*) FROM characters WHERE is_player = 1").fetchone()[0]
+    npc_count = conn.execute("SELECT COUNT(*) FROM characters WHERE is_player = 0").fetchone()[0]
+    conn.close()
+
+    assert player_count == 1
+    assert npc_count == 2
