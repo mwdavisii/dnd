@@ -5,7 +5,7 @@ import requests
 import json
 from dotenv import load_dotenv
 from dnd.database import load_npc_memories, save_npc_memory
-from dnd.spectator import default_fallback_action, format_turn_context, validate_turn_output
+from dnd.spectator import default_fallback_action, format_turn_context, is_fallback_action, _strip_fallback_marker, validate_turn_output
 from dnd.ui import style, thinking_message, wrap_text
 
 load_dotenv()
@@ -110,29 +110,22 @@ class NPCAgent:
         )
 
         try:
-            print(thinking_message(f"{self.name} is thinking"))
-            _t0 = time.time()
-            response = requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": prompt,
-                    "system": self.system_prompt,
-                    "stream": False,
-                },
-                timeout=(5, 120),
-            )
-            response.raise_for_status()
-            print(style(f"[{self.name}: {time.time() - _t0:.1f}s]", "gray", dim=True))
-            payload = response.json()
-            final_response = validate_turn_output(
-                payload.get("response", "").strip(),
-                actor_name=self.name,
-                actor_type="companion",
-                recent_party_actions=party_actions,
-                turn_context=turn_context,
-                fallback=default_fallback_action(self.name, "companion"),
-            )
+            final_response = self._try_generate_action(prompt, party_actions, turn_context)
+
+            # Retry once if first attempt produced a fallback
+            if is_fallback_action(final_response):
+                retry_prompt = (
+                    f"{prompt}\n\n"
+                    "IMPORTANT: Your previous response was not usable. "
+                    "You MUST describe a specific, concrete action — attack, move, speak, investigate, or defend. "
+                    "Do NOT say you 'keep watch' or 'stay ready'. Act decisively."
+                )
+                retry_response = self._try_generate_action(retry_prompt, party_actions, turn_context)
+                if not is_fallback_action(retry_response):
+                    final_response = retry_response
+
+            # Strip the fallback marker before storing
+            final_response = _strip_fallback_marker(final_response)
             if final_response:
                 self.history.append({"role": "assistant", "content": final_response})
                 self.remember(f"{self.name} took a turn: {final_response}")
@@ -141,6 +134,37 @@ class NPCAgent:
             error_message = f"Error connecting to Ollama: {e}"
             print(error_message)
             return error_message
+
+    def _try_generate_action(
+        self,
+        prompt: str,
+        party_actions: list[str],
+        turn_context: dict | None,
+    ) -> str:
+        """Make a single Ollama call and validate the result. Returns the action (possibly marked as fallback)."""
+        print(thinking_message(f"{self.name} is thinking"))
+        _t0 = time.time()
+        response = requests.post(
+            f"{self.ollama_host}/api/generate",
+            json={
+                "model": self.ollama_model,
+                "prompt": prompt,
+                "system": self.system_prompt,
+                "stream": False,
+            },
+            timeout=(5, 120),
+        )
+        response.raise_for_status()
+        print(style(f"[{self.name}: {time.time() - _t0:.1f}s]", "gray", dim=True))
+        payload = response.json()
+        return validate_turn_output(
+            payload.get("response", "").strip(),
+            actor_name=self.name,
+            actor_type="companion",
+            recent_party_actions=party_actions,
+            turn_context=turn_context,
+            fallback=default_fallback_action(self.name, "companion", turn_context),
+        )
 
     def _format_history(self, history):
         return "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in history])

@@ -590,7 +590,7 @@ def test_beat_past_deadline_returns_true_when_round_exceeds_ratio(monkeypatch, d
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")
     dm = DungeonMaster(session_id=dm_db)
     dm.update_world_state("target_rounds", 10)
-    dm.update_world_state("current_round", 4)  # 4/10 = 0.40 > hook deadline 0.25
+    dm.update_world_state("current_round", 4)  # 4/10 = 0.40 > hook deadline 0.20
     assert dm._beat_past_deadline("hook") is True
 
 
@@ -599,7 +599,7 @@ def test_beat_past_deadline_returns_false_before_deadline(monkeypatch, dm_db):
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")
     dm = DungeonMaster(session_id=dm_db)
     dm.update_world_state("target_rounds", 10)
-    dm.update_world_state("current_round", 2)  # 2/10 = 0.20 < hook deadline 0.25
+    dm.update_world_state("current_round", 1)  # 1/10 = 0.10 < hook deadline 0.20
     assert dm._beat_past_deadline("hook") is False
 
 
@@ -612,12 +612,12 @@ def test_beat_past_deadline_returns_false_when_no_target(monkeypatch, dm_db):
     assert dm._beat_past_deadline("hook") is False
 
 
-def test_evaluate_beat_force_advances_past_deadline(monkeypatch, dm_db):
+def test_advance_beat_if_past_deadline_forces_advance(monkeypatch, dm_db):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")
     dm = DungeonMaster(session_id=dm_db)
     dm.update_world_state("target_rounds", 10)
-    dm.update_world_state("current_round", 4)  # past hook deadline
+    dm.update_world_state("current_round", 4)  # past hook deadline 0.20
     dm.update_world_state("current_beat", "hook")
     dm.update_world_state("story_arc", {
         "hook": {"goal": "Find the threat", "key_npcs": [], "success_condition": "Threat identified"},
@@ -626,7 +626,7 @@ def test_evaluate_beat_force_advances_past_deadline(monkeypatch, dm_db):
         "resolution": {"goal": "Wrap up", "key_npcs": [], "success_condition": "Done"},
     })
     # No LLM call should be needed — deadline triggers it
-    dm._evaluate_beat("The party investigates the mill.")
+    dm._advance_beat_if_past_deadline()
     assert dm.world_state["current_beat"] == "complication"
     assert dm.world_state["story_phase"] == "midgame"
 

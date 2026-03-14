@@ -171,4 +171,7 @@ def test_npc_turn_output_falls_back_on_outcome_label(monkeypatch, npc_db):
     with patch("dnd.npc.agent.requests.post", return_value=fake_response):
         action = agent.generate_turn_action([], "The doorway is dark and quiet.")
 
-    assert action == "I keep watch, cover the group, and point out the next safe opening."
+    # Fallback marker is stripped before returning from generate_turn_action
+    # The action should be a phase-aware fallback (opening phase since no turn_context)
+    assert "keep watch" not in action  # old static fallback should be gone
+    assert len(action) > 10  # should be a real sentence

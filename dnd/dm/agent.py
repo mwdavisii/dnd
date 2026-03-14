@@ -14,7 +14,7 @@ from dnd.ui import apply_base_style, highlight_quotes, style, thinking_message, 
 
 load_dotenv()
 
-_BEAT_DEADLINES = {"hook": 0.25, "complication": 0.65, "climax": 0.87}
+_BEAT_DEADLINES = {"hook": 0.20, "complication": 0.50, "climax": 0.75}
 
 class DungeonMaster:
     def __init__(self, session_id: int):
@@ -166,7 +166,11 @@ class DungeonMaster:
         return (current_round / target_rounds) >= deadline_ratio
 
     def _evaluate_beat(self, response: str) -> None:
-        """Check if the current story beat is complete and advance if so."""
+        """Check if the current story beat's success condition is met via LLM and advance if so.
+
+        Deadline-based advancement is handled earlier by _advance_beat_if_past_deadline().
+        This method only performs the LLM-based evaluation for early advancement.
+        """
         story_arc = self.world_state.get("story_arc")
         if not story_arc:
             return
@@ -179,45 +183,69 @@ class DungeonMaster:
         if current_idx >= len(beat_order) - 1:
             return  # Already at resolution
 
-        should_advance = self._beat_past_deadline(current_beat)
+        success_condition = str(story_arc.get(current_beat, {}).get("success_condition", "") or "")
+        if not success_condition:
+            return
 
-        if not should_advance:
-            success_condition = str(story_arc.get(current_beat, {}).get("success_condition", "") or "")
-            if success_condition:
-                prompt = BEAT_EVALUATION_PROMPT.format(
-                    success_condition=success_condition,
-                    dm_response=response[:900],
-                )
-                try:
-                    _t0 = time.time()
-                    eval_response = requests.post(
-                        f"{self.ollama_host}/api/generate",
-                        json={
-                            "model": self.ollama_model,
-                            "prompt": prompt,
-                            "stream": False,
-                        },
-                        timeout=(5, 30),
-                    )
-                    eval_response.raise_for_status()
-                    print(style(f"[Beat: {time.time() - _t0:.1f}s]", "gray", dim=True))
-                    raw = eval_response.json().get("response", "").strip().lower()
-                    if raw.startswith("yes"):
-                        should_advance = True
-                except requests.exceptions.RequestException:
-                    pass  # Silently skip on network error
+        prompt = BEAT_EVALUATION_PROMPT.format(
+            success_condition=success_condition,
+            dm_response=response[:900],
+        )
+        try:
+            _t0 = time.time()
+            eval_response = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                },
+                timeout=(5, 30),
+            )
+            eval_response.raise_for_status()
+            print(style(f"[Beat: {time.time() - _t0:.1f}s]", "gray", dim=True))
+            raw = eval_response.json().get("response", "").strip().lower()
+            if raw.startswith("yes"):
+                next_beat = beat_order[current_idx + 1]
+                self.update_world_state("current_beat", next_beat)
+                self.update_world_state("story_phase", _BEAT_PHASE[next_beat])
+        except requests.exceptions.RequestException:
+            pass  # Silently skip on network error
 
-        if should_advance:
+    def _advance_beat_if_past_deadline(self) -> None:
+        """Force-advance the current beat if the round has passed its hard deadline.
+
+        Called BEFORE building the DM prompt so the DM sees the correct phase.
+        """
+        story_arc = self.world_state.get("story_arc")
+        if not story_arc:
+            return
+        beat_order = ["hook", "complication", "climax", "resolution"]
+        current_beat = str(self.world_state.get("current_beat", "hook") or "hook")
+        if current_beat not in beat_order:
+            return
+        current_idx = beat_order.index(current_beat)
+        if current_idx >= len(beat_order) - 1:
+            return
+        if self._beat_past_deadline(current_beat):
             next_beat = beat_order[current_idx + 1]
             self.update_world_state("current_beat", next_beat)
             self.update_world_state("story_phase", _BEAT_PHASE[next_beat])
 
     def generate_response(self, prompt: str, player_sheet: CharacterSheet, npcs: dict) -> tuple[str, str]:
         self.add_history("user", prompt)
+        self._advance_beat_if_past_deadline()
 
         npc_summaries = []
         for npc in npcs.values():
             npc_summaries.append(f"- {npc.name} the {npc.class_name}")
+
+        in_resolution = self.world_state.get("story_phase") == "resolution"
+        ending_instruction = (
+            "Do not ask what the player does next. Narrate a satisfying conclusion."
+            if in_resolution
+            else "End with one direct question asking what the player does next."
+        )
 
         full_prompt = (
             f"{player_sheet.get_prompt_summary()}\n\n"
@@ -230,7 +258,7 @@ class DungeonMaster:
             "Do not add extra assistant turns, recap loops, or speculative follow-up actions by the player.\n"
             "Do not include labels such as Assistant:, User:, Outcome:, or repeated speaker prefixes.\n"
             f"Arc directive: {self._arc_pressure_instruction()}\n"
-            "End with one direct question asking what the player does next."
+            f"{ending_instruction}"
         )
 
         try:

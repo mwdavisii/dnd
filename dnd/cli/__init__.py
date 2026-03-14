@@ -4,7 +4,7 @@ from collections import Counter
 from dnd.data import _BEAT_PHASE, HELP_TOPICS, MONSTER_DATA, RULES_REFERENCE, SPELL_DATA, STORE_INVENTORY, WEAPON_DATA
 from dnd.game import roll_dice
 from dnd.database import get_db_connection
-from dnd.spectator import build_turn_context
+from dnd.spectator import build_turn_context, is_fallback_action, _strip_fallback_marker
 from dnd.ui import speaker, style, wrap_text
 
 COMMAND_NAMES = [
@@ -262,11 +262,13 @@ class CommandHandler:
                 recent_party_actions,
                 turn_context=turn_context,
             )
-            self.last_companion_response = response or ""
-            if response:
-                print(wrap_text(response))
-                self.dm.add_history("assistant", f"{npc.name}: {response}")
-                self._record_party_action(f"{npc.name} acted: {response}")
+            display_response = _strip_fallback_marker(response) if response else ""
+            self.last_companion_response = display_response
+            if display_response:
+                print(wrap_text(display_response))
+                self.dm.add_history("assistant", f"{npc.name}: {display_response}")
+                if not is_fallback_action(response):
+                    self._record_party_action(f"{npc.name} acted: {display_response}")
             self.advance_turn()
             self.print_turn_status()
             return (True, "")

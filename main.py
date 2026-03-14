@@ -36,7 +36,7 @@ from dnd.character_creator import (
 from dnd.data import STORE_INVENTORY # Import STORE_INVENTORY
 from dnd.cli import CommandHandler
 from dnd.completion import enable_command_completion
-from dnd.spectator import build_scene_memory, build_turn_context, detect_scene_stall
+from dnd.spectator import build_scene_memory, build_turn_context, detect_scene_stall, is_fallback_action, _strip_fallback_marker
 from dnd.transcript import TranscriptWriter
 from dnd.ui import apply_base_style, banner, highlight_quotes, prompt_marker, section, speaker, style, wrap_text
 
@@ -295,9 +295,10 @@ def process_dm_turn(user_input: str, dm, npcs, player_sheet, character_sheets, h
     if transcript:
         transcript.write_dm_response(cleaned_response, _dm_elapsed)
     previous_scene_memory = str(dm.world_state.get("scene_summary", "") or "")
-    recent_party_actions = list(dm.world_state.get("recent_party_actions", []))
-    recent_party_actions.append(f"{player_sheet.name} acted: {user_input}")
-    dm.update_world_state("recent_party_actions", recent_party_actions[-6:])
+    if not is_fallback_action(user_input):
+        recent_party_actions = list(dm.world_state.get("recent_party_actions", []))
+        recent_party_actions.append(f"{player_sheet.name} acted: {_strip_fallback_marker(user_input)}")
+        dm.update_world_state("recent_party_actions", recent_party_actions[-6:])
     scene_memory = build_scene_memory(user_input, response)
     dm.update_world_state("scene_summary", scene_memory)
     new_progress_events = dm.world_state.get("last_progress_events", [])
@@ -358,9 +359,10 @@ def run_spectator_turn(handler, dm, player_sheet, player_agent, transcript=None)
             recent_party_actions=recent_party_actions,
             turn_context=turn_context,
         )
-        if transcript and action:
-            transcript.write_player_action(player_sheet.name, action)
-        print(f"\n{speaker(player_sheet.name, 'cyan')} {wrap_text(action)}")
+        display_action = _strip_fallback_marker(action) if action else action
+        if transcript and display_action:
+            transcript.write_player_action(player_sheet.name, display_action)
+        print(f"\n{speaker(player_sheet.name, 'cyan')} {wrap_text(display_action)}")
         return action
     if actor["type"] == "companion":
         _t0 = time.time()

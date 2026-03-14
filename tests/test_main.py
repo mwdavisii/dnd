@@ -135,7 +135,9 @@ def test_validate_turn_output_rejects_recent_duplicates():
         recent_party_actions=["Kraton acted: I circle the forge."],
     )
 
-    assert action == "Kraton studies the scene, moves toward the clearest lead, and stays ready to react."
+    from dnd.spectator import is_fallback_action
+    assert is_fallback_action(action)  # should be a fallback, not the duplicate
+    assert "circle" not in action.lower()  # should NOT be the original duplicate
 
 
 def test_validate_turn_output_rejects_action_that_abandons_active_hook():
