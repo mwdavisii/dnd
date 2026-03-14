@@ -2,6 +2,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from dnd.cli import CommandHandler
+from dnd.spectator import build_turn_context
 
 
 # ---------------------------------------------------------------------------
@@ -521,10 +522,18 @@ def test_npc_turn_command_runs_active_companion(player_sheet, dm, capsys):
     h.advance_turn()
     skip_dm, _ = h.handle("/npcturn")
     assert skip_dm is True
+    expected_context = build_turn_context(
+        dm.world_state,
+        actor_name="Aria",
+        actor_type="companion",
+        scene_summary=dm.world_state["scene_summary"] if "scene_summary" in dm.world_state else "No scene summary recorded yet.",
+        recent_party_actions=["Wizard acted: I move to the doorway."],
+    )
     npc.generate_turn_action.assert_called_once_with(
         dm.history,
         dm.world_state["scene_summary"] if "scene_summary" in dm.world_state else "No scene summary recorded yet.",
         ["Wizard acted: I move to the doorway."],
+        turn_context=expected_context,
     )
     out = capsys.readouterr().out
     assert "Aria:" in out
@@ -809,3 +818,44 @@ def test_encounter_completion_handles_additional_enemy_entries(handler):
     completions = handler.get_completion_candidates("/encounter start Goblin, Or")
     assert "/encounter start Goblin, Orc" in completions
     assert "/encounter start Goblin, Orc:1" in completions
+
+
+# ---------------------------------------------------------------------------
+# _sync_story_pacing — story_phase derived from current_beat
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mock_dm():
+    m = MagicMock()
+    m.history = []
+    m.world_state = {}
+    return m
+
+
+def test_sync_story_pacing_derives_phase_from_current_beat(mock_dm):
+    """story_phase must reflect current_beat, not the round ratio."""
+    mock_dm.world_state = {
+        "target_rounds": 10,
+        "current_round": 1,
+        "current_beat": "climax",  # beat says climax
+    }
+    mock_dm.update_world_state = lambda k, v: mock_dm.world_state.update({k: v})
+
+    from dnd.cli import CommandHandler
+    handler = CommandHandler(MagicMock(), {}, {}, mock_dm)
+    # At round 1 of 10 (10%), old code would set story_phase="opening"
+    # New code must use current_beat="climax" → story_phase="climax"
+    assert mock_dm.world_state["story_phase"] == "climax"
+
+
+def test_sync_story_pacing_defaults_phase_to_opening_when_no_beat(mock_dm):
+    mock_dm.world_state = {
+        "target_rounds": 10,
+        "current_round": 1,
+        # no current_beat set
+    }
+    mock_dm.update_world_state = lambda k, v: mock_dm.world_state.update({k: v})
+
+    from dnd.cli import CommandHandler
+    handler = CommandHandler(MagicMock(), {}, {}, mock_dm)
+    assert mock_dm.world_state["story_phase"] == "opening"

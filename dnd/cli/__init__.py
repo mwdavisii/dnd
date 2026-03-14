@@ -7,6 +7,13 @@ from dnd.database import get_db_connection
 from dnd.spectator import build_turn_context
 from dnd.ui import speaker, style
 
+_BEAT_PHASE = {
+    "hook": "opening",
+    "complication": "midgame",
+    "climax": "climax",
+    "resolution": "resolution",
+}
+
 COMMAND_NAMES = [
     "/addcondition",
     "/attack",
@@ -869,16 +876,9 @@ class CommandHandler:
         if target_rounds > 0:
             remaining_rounds = max(target_rounds - self.round_number, 0)
             self.dm.update_world_state("remaining_rounds", remaining_rounds)
-            progress_ratio = self.round_number / target_rounds
-            if progress_ratio <= 0.25:
-                story_phase = "opening"
-            elif progress_ratio <= 0.70:
-                story_phase = "midgame"
-            elif progress_ratio <= 0.90:
-                story_phase = "climax"
-            else:
-                story_phase = "resolution"
-            self.dm.update_world_state("story_phase", story_phase)
+        current_beat = str(self.dm.world_state.get("current_beat", "hook") or "hook")
+        story_phase = _BEAT_PHASE.get(current_beat, "opening")
+        self.dm.update_world_state("story_phase", story_phase)
 
     def print_turn_status(self) -> None:
         if self.encounter:
