@@ -7,7 +7,6 @@ from datetime import datetime
 from dnd.dm.agent import DungeonMaster
 from dnd.npc.agent import NPCAgent
 from dnd.npc.prompts import NPC_ARCHETYPES
-from dnd.player_agent import AutoPlayerAgent
 from dnd.game import roll_dice
 from dnd.character import CharacterSheet
 from dnd.database import (
@@ -40,6 +39,24 @@ from dnd.completion import enable_command_completion
 from dnd.spectator import build_scene_memory, build_turn_context, detect_scene_stall
 from dnd.transcript import TranscriptWriter
 from dnd.ui import apply_base_style, banner, highlight_quotes, prompt_marker, section, speaker, style, wrap_text
+
+
+def _build_player_agent(player_sheet, dm):
+    from dnd.npc.agent import NPCAgent
+    items = player_sheet.equipped_items
+    item_str = ", ".join(items) if items else "basic equipment"
+    system_prompt = (
+        f"You are {player_sheet.name}, a {player_sheet.class_name}. "
+        f"You are a capable adventurer exploring a dangerous world. "
+        f"Your equipped items include: {item_str}. "
+        f"Act decisively and in character. Speak briefly and concretely."
+    )
+    return NPCAgent(
+        name=player_sheet.name,
+        class_name=player_sheet.class_name,
+        system_prompt=system_prompt,
+        session_id=dm.session_id,
+    )
 
 
 def should_wait_before_spectator_turn(actor_type: str) -> bool:
@@ -163,7 +180,7 @@ def main():
             spectator_pause_seconds = float(dm.world_state.get("spectator_pause_seconds", 0.0) or 0.0)
         handler = CommandHandler(player_sheet, character_sheets, npcs, dm)
         enable_command_completion(handler)
-        player_agent = AutoPlayerAgent(player_sheet) if spectator_mode else None
+        player_agent = _build_player_agent(player_sheet, dm) if spectator_mode else None
 
         # --- Game Start ---
         clear_screen()
@@ -335,7 +352,12 @@ def run_spectator_turn(handler, dm, player_sheet, player_agent, transcript=None)
             scene_summary=scene_summary,
             recent_party_actions=recent_party_actions,
         )
-        action = player_agent.generate_action(scene_summary, recent_party_actions, turn_context=turn_context)
+        action = player_agent.generate_turn_action(
+            game_context=list(dm.history),
+            scene_summary=scene_summary,
+            recent_party_actions=recent_party_actions,
+            turn_context=turn_context,
+        )
         if transcript and action:
             transcript.write_player_action(player_sheet.name, action)
         print(f"\n{speaker(player_sheet.name, 'cyan')} {action}")
