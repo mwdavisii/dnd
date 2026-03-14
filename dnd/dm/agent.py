@@ -301,6 +301,52 @@ class DungeonMaster:
             print(error_message)
             return error_message, error_message
 
+    def generate_epilogue(self) -> str:
+        """Generate a dedicated conclusion scene that wraps up the story."""
+        recent_story = self._recent_history_summary()
+        objective = str(self.world_state.get("objective", "") or "")
+        story_arc = self.world_state.get("story_arc") or {}
+        resolution_goal = str(story_arc.get("resolution", {}).get("goal", "") or "")
+
+        prompt = (
+            "You are narrating the final scene of a short D&D adventure.\n\n"
+            f"The party's objective was: {objective}\n"
+            f"The resolution goal is: {resolution_goal}\n\n"
+            "Recent events:\n"
+            f"{recent_story}\n\n"
+            "Write a 2-3 paragraph CONCLUSION that:\n"
+            "1. Resolves the central conflict decisively (victory, defeat, escape, or sacrifice)\n"
+            "2. Shows what happens to the main characters afterward\n"
+            "3. Ends with a final closing sentence — do NOT ask what the player does next\n"
+            "4. Do NOT introduce new threats, mysteries, cliffhangers, or dice rolls\n"
+            "5. Keep it under 200 words\n\n"
+            "Write only the conclusion narration. No labels, no meta-commentary."
+        )
+
+        try:
+            print(thinking_message("Writing the epilogue"))
+            _t0 = time.time()
+            response = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                },
+                timeout=(5, 120),
+            )
+            response.raise_for_status()
+            print(style(f"[Epilogue: {time.time() - _t0:.1f}s]", "gray", dim=True))
+            raw = response.json().get("response", "").strip()
+            if not raw:
+                raw = "The adventure draws to a close. The party stands together, battered but unbroken, as the dust settles on what has been a harrowing journey."
+            # Strip any lingering "What do you do?" from the epilogue
+            raw = re.sub(r"(?m)\s*What do you do.*$", "", raw, flags=re.IGNORECASE).strip()
+            return raw
+        except requests.exceptions.RequestException as e:
+            print(f"Error generating epilogue: {e}")
+            return "The adventure draws to a close. The party stands together, battered but unbroken, as the dust settles on what has been a harrowing journey."
+
     def _format_history(self):
         return "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in self.history])
 

@@ -214,7 +214,12 @@ def main():
             try:
                 if spectator_mode:
                     if handler.round_number > target_rounds:
-                        print(style("Spectator run finished: reached the configured round limit.", "silver", dim=True, italic=True))
+                        print(f"\n{speaker('DM', 'gold')} ", end="")
+                        epilogue = dm.generate_epilogue()
+                        print(apply_base_style(highlight_quotes(wrap_text(epilogue)), "parchment"))
+                        if transcript:
+                            transcript.write_dm_response(epilogue, 0)
+                        print(style("\nThe adventure concludes.", "silver", dim=True, italic=True))
                         break
                     actor = handler.current_turn_actor
                     should_pause = should_wait_before_spectator_turn(actor["type"])
