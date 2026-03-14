@@ -252,7 +252,7 @@ class DungeonMaster:
         except requests.exceptions.RequestException as e:
             error_message = f"Error connecting to Ollama: {e}"
             print(error_message)
-            return error_message
+            return error_message, error_message
 
     def _format_history(self):
         return "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in self.history])
