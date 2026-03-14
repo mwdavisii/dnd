@@ -1,18 +1,11 @@
 # dnd/cli/__init__.py
 import json
 from collections import Counter
-from dnd.data import HELP_TOPICS, MONSTER_DATA, RULES_REFERENCE, SPELL_DATA, STORE_INVENTORY, WEAPON_DATA
+from dnd.data import _BEAT_PHASE, HELP_TOPICS, MONSTER_DATA, RULES_REFERENCE, SPELL_DATA, STORE_INVENTORY, WEAPON_DATA
 from dnd.game import roll_dice
 from dnd.database import get_db_connection
 from dnd.spectator import build_turn_context
 from dnd.ui import speaker, style
-
-_BEAT_PHASE = {
-    "hook": "opening",
-    "complication": "midgame",
-    "climax": "climax",
-    "resolution": "resolution",
-}
 
 COMMAND_NAMES = [
     "/addcondition",

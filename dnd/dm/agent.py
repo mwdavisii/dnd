@@ -8,20 +8,13 @@ from collections import Counter
 from dnd.dm.prompts import ARC_GENERATION_PROMPT, BEAT_EVALUATION_PROMPT, OPENING_SCENE_PROMPT, SYSTEM_PROMPT
 from dnd.character import CharacterSheet
 from dnd.database import load_world_state, save_world_state
-from dnd.data import MONSTER_DATA
+from dnd.data import _BEAT_PHASE, MONSTER_DATA
 from dnd.spectator import format_turn_context, momentum_label, phase_goal
 from dnd.ui import apply_base_style, highlight_quotes, style, thinking_message, wrap_text
 
 load_dotenv()
 
 _BEAT_DEADLINES = {"hook": 0.25, "complication": 0.65, "climax": 0.87}
-_BEAT_PHASE = {
-    "hook": "opening",
-    "complication": "midgame",
-    "climax": "climax",
-    "resolution": "resolution",
-}
-
 
 class DungeonMaster:
     def __init__(self, session_id: int):

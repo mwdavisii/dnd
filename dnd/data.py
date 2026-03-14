@@ -61,6 +61,13 @@ HELP_TOPICS = {
     ],
 }
 
+_BEAT_PHASE = {
+    "hook": "opening",
+    "complication": "midgame",
+    "climax": "climax",
+    "resolution": "resolution",
+}
+
 RULES_REFERENCE = {
     "advantage": "Advantage means rolling two d20s and using the higher result. Disadvantage uses the lower result.",
     "saving-throws": "A saving throw is a defensive d20 roll. Roll 1d20, add the listed save modifier, and try to meet or beat the DC.",
