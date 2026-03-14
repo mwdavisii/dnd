@@ -539,6 +539,12 @@ def test_generate_response_returns_raw_and_cleaned_tuple(monkeypatch, dm_db, pla
     assert "<level_up />" not in cleaned
 
 
+def test_beat_evaluation_prompt_uses_substantial_progress():
+    from dnd.dm.prompts import BEAT_EVALUATION_PROMPT
+    assert "substantial progress" in BEAT_EVALUATION_PROMPT
+    assert "fully met" not in BEAT_EVALUATION_PROMPT
+
+
 def test_format_turn_context_includes_beat_goal():
     ctx = {
         "actor_name": "Kraton",

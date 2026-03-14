@@ -115,6 +115,6 @@ Current beat success condition:
 What just happened in the story:
 {dm_response}
 
-Has the success condition been fully met based on what happened?
+Has the party made substantial progress toward this condition based on what happened?
 Answer with only YES or NO.
 """
