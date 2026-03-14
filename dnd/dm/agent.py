@@ -102,6 +102,7 @@ class DungeonMaster:
                 timeout=(5, 120),
             )
             response.raise_for_status()
+            print(style(f"[Arc: {time.time() - _t0:.1f}s]", "gray", dim=True))
             raw = response.json().get("response", "").strip()
             json_match = re.search(r'\{.*\}', raw, re.DOTALL)
             arc_data = json.loads(json_match.group() if json_match else raw)
@@ -120,7 +121,6 @@ class DungeonMaster:
                 self.update_world_state("nearby_locations", arc_data["nearby_locations"])
             if arc_data.get("story_hook"):
                 self.update_world_state("story_hook", arc_data["story_hook"])
-            print(style(f"[Arc: {time.time() - _t0:.1f}s]", "gray", dim=True))
         except (requests.exceptions.RequestException, json.JSONDecodeError, AttributeError):
             self._set_fallback_arc()
 
