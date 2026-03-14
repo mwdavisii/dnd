@@ -194,7 +194,7 @@ class DungeonMaster:
         except requests.exceptions.RequestException:
             pass  # Silently skip on network error
 
-    def generate_response(self, prompt: str, player_sheet: CharacterSheet, npcs: dict) -> str:
+    def generate_response(self, prompt: str, player_sheet: CharacterSheet, npcs: dict) -> tuple[str, str]:
         self.add_history("user", prompt)
 
         npc_summaries = []
