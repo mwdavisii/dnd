@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 import json
 import re
@@ -52,6 +53,7 @@ class DungeonMaster:
 
         try:
             print(thinking_message("Generating opening scene"))
+            _t0 = time.time()
             response = requests.post(
                 f"{self.ollama_host}/api/generate",
                 json={
@@ -63,6 +65,7 @@ class DungeonMaster:
                 timeout=(5, 120),
             )
             response.raise_for_status()
+            print(style(f"[Opening: {time.time() - _t0:.1f}s]", "gray", dim=True))
             payload = response.json()
             opening_scene = payload.get("response", "").strip()
             if not opening_scene:
@@ -88,6 +91,7 @@ class DungeonMaster:
         prompt = ARC_GENERATION_PROMPT.format(opening_scene=opening_scene)
         try:
             print(thinking_message("Generating story arc"))
+            _t0 = time.time()
             response = requests.post(
                 f"{self.ollama_host}/api/generate",
                 json={
@@ -116,6 +120,7 @@ class DungeonMaster:
                 self.update_world_state("nearby_locations", arc_data["nearby_locations"])
             if arc_data.get("story_hook"):
                 self.update_world_state("story_hook", arc_data["story_hook"])
+            print(style(f"[Arc: {time.time() - _t0:.1f}s]", "gray", dim=True))
         except (requests.exceptions.RequestException, json.JSONDecodeError, AttributeError):
             self._set_fallback_arc()
 
@@ -167,9 +172,10 @@ class DungeonMaster:
 
         prompt = BEAT_EVALUATION_PROMPT.format(
             success_condition=success_condition,
-            dm_response=response[:600],
+            dm_response=response[:900],
         )
         try:
+            _t0 = time.time()
             eval_response = requests.post(
                 f"{self.ollama_host}/api/generate",
                 json={
@@ -180,6 +186,7 @@ class DungeonMaster:
                 timeout=(5, 30),
             )
             eval_response.raise_for_status()
+            print(style(f"[Beat: {time.time() - _t0:.1f}s]", "gray", dim=True))
             raw = eval_response.json().get("response", "").strip().lower()
             if raw.startswith("yes"):
                 next_beat = beat_order[current_idx + 1]
@@ -209,6 +216,7 @@ class DungeonMaster:
 
         try:
             print(thinking_message("DM is thinking"))
+            _t0 = time.time()
             response = requests.post(
                 f"{self.ollama_host}/api/generate",
                 json={
@@ -232,6 +240,7 @@ class DungeonMaster:
                         full_response.append(response_part)
 
             final_response = "".join(full_response)
+            print(style(f"[DM: {time.time() - _t0:.1f}s]", "gray", dim=True))
             cleaned_response = self._sanitize_dm_response(final_response, prompt)
             cleaned_response = self._extract_structured_updates(cleaned_response)
             self._evaluate_beat(cleaned_response)
@@ -277,6 +286,7 @@ class DungeonMaster:
             "nearby_locations": self._world_state_list("nearby_locations")[:4],
             "resolved_events": self._world_state_list("resolved_events")[-4:],
             "last_progress_events": self._world_state_list("last_progress_events")[-3:],
+            "current_beat_goal": self._current_beat_goal(),
         }
         pending_roll = self.world_state.get("pending_roll")
         pending_roll_text = "none"
@@ -289,7 +299,6 @@ class DungeonMaster:
             f"{format_turn_context(turn_context)}\n"
             f"Submitted action: {prompt}\n"
             f"Pending roll: {pending_roll_text}\n"
-            f"Current beat goal: {self._current_beat_goal()}\n"
             f"Arc pressure: {self._arc_pressure_instruction()}\n"
             f"Objective lock: {self._objective_lock_instruction()}"
         )

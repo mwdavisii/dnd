@@ -1,10 +1,12 @@
 # dnd/npc/agent.py
 import os
+import time
 import requests
 import json
 from dotenv import load_dotenv
 from dnd.database import load_npc_memories, save_npc_memory
-from dnd.ui import thinking_message, wrap_text
+from dnd.spectator import default_fallback_action, format_turn_context, validate_turn_output
+from dnd.ui import style, thinking_message, wrap_text
 
 load_dotenv()
 
@@ -43,6 +45,7 @@ class NPCAgent:
 
         try:
             print(thinking_message(f"{self.name} is thinking"))
+            _t0 = time.time()
             response = requests.post(
                 f"{self.ollama_host}/api/generate",
                 json={
@@ -66,6 +69,7 @@ class NPCAgent:
                         full_response.append(response_part)
 
             final_response = "".join(full_response)
+            print(style(f"[{self.name}: {time.time() - _t0:.1f}s]", "gray", dim=True))
             self.history.append({"role": "assistant", "content": final_response})
             self.remember(f"{self.name} said: {final_response}")
             print(wrap_text(final_response))
@@ -76,14 +80,21 @@ class NPCAgent:
             print(error_message)
             return error_message
 
-    def generate_turn_action(self, game_context: list, scene_summary: str, recent_party_actions: list[str] | None = None) -> str:
+    def generate_turn_action(
+        self,
+        game_context: list,
+        scene_summary: str,
+        recent_party_actions: list[str] | None = None,
+        turn_context: dict | None = None,
+    ) -> str:
         party_actions = recent_party_actions or []
+        context_block = format_turn_context(turn_context) if turn_context else scene_summary
         prompt = (
             f"{self.system_prompt}\n\n"
             "What you distinctly remember:\n"
             f"{self._format_memory()}\n\n"
-            "Here is the current scene summary:\n"
-            f"{scene_summary}\n\n"
+            "Here is the current turn context:\n"
+            f"{context_block}\n\n"
             "Recent party actions:\n"
             f"{self._format_party_actions(party_actions)}\n\n"
             "Here is the recent party history:\n"
@@ -91,12 +102,16 @@ class NPCAgent:
             f"It is {self.name}'s turn.\n"
             "In 1-2 short sentences, describe only your own action, movement, warning, or observation.\n"
             "Coordinate with recent ally actions when it makes sense.\n"
+            "Prefer actions that reveal, flank, protect, question, investigate, or pressure the threat instead of repeating generic caution.\n"
+            "If the scene momentum is slow or stalled, do something that changes the situation.\n"
             "Do not narrate the player's actions. Do not command the player to cast, attack, or move.\n"
-            "Do not speak for other companions. Stay concrete and brief."
+            "Do not speak for other companions. Do not include labels such as DM:, Outcome:, or your own name.\n"
+            "Stay concrete and brief."
         )
 
         try:
             print(thinking_message(f"{self.name} is thinking"))
+            _t0 = time.time()
             response = requests.post(
                 f"{self.ollama_host}/api/generate",
                 json={
@@ -108,8 +123,16 @@ class NPCAgent:
                 timeout=(5, 120),
             )
             response.raise_for_status()
+            print(style(f"[{self.name}: {time.time() - _t0:.1f}s]", "gray", dim=True))
             payload = response.json()
-            final_response = payload.get("response", "").strip()
+            final_response = validate_turn_output(
+                payload.get("response", "").strip(),
+                actor_name=self.name,
+                actor_type="companion",
+                recent_party_actions=party_actions,
+                turn_context=turn_context,
+                fallback=default_fallback_action(self.name, "companion"),
+            )
             if final_response:
                 self.history.append({"role": "assistant", "content": final_response})
                 self.remember(f"{self.name} took a turn: {final_response}")

@@ -479,6 +479,44 @@ def test_build_turn_context_includes_current_beat_goal(monkeypatch, dm_db):
     assert ctx["current_beat_goal"] == "Follow the cloaked man."
 
 
+def test_generate_opening_scene_prints_timing(monkeypatch, dm_db, player_sheet, capsys):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "You stand in a market square. What do you do?"}
+    fake_response.raise_for_status.return_value = None
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        dm.generate_opening_scene(player_sheet, {})
+
+    out = capsys.readouterr().out
+    assert "[Opening:" in out
+    assert "s]" in out
+
+
+def test_generate_response_prints_timing(monkeypatch, dm_db, player_sheet, capsys):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.iter_lines.return_value = [
+        b'{"response":"The trail bends.","done":false}',
+        b'{"done":true}',
+    ]
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        with patch.object(dm, "_evaluate_beat"):
+            dm.generate_response("Look around.", player_sheet, {})
+
+    out = capsys.readouterr().out
+    assert "[DM:" in out
+    assert "s]" in out
+
+
 def test_format_turn_context_includes_beat_goal():
     ctx = {
         "actor_name": "Kraton",

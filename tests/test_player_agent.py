@@ -65,6 +65,30 @@ def test_auto_player_agent_rejects_speaker_labeled_output(monkeypatch, player_sh
     assert action == "Mike studies the scene, moves toward the clearest lead, and stays ready to react."
 
 
+def test_generate_action_prints_timing(monkeypatch, capsys):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+
+    from unittest.mock import MagicMock, patch
+    from dnd.player_agent import AutoPlayerAgent
+
+    sheet = MagicMock()
+    sheet.name = "Kraton"
+    sheet.get_prompt_summary.return_value = "--- Character: Kraton ---"
+    agent = AutoPlayerAgent(sheet)
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "Follow the cloaked man."}
+    fake_response.raise_for_status.return_value = None
+
+    with patch("dnd.player_agent.requests.post", return_value=fake_response):
+        agent.generate_action("The man is leaving.", [])
+
+    out = capsys.readouterr().out
+    assert "[Player:" in out
+    assert "s]" in out
+
+
 def test_generate_action_includes_beat_goal(monkeypatch):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")

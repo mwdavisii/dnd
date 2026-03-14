@@ -116,5 +116,42 @@ def test_npc_turn_prompt_limits_action_ownership(monkeypatch, npc_db):
 
     assert "Do not narrate the player's actions." in captured["prompt"]
     assert "Do not command the player to cast, attack, or move." in captured["prompt"]
+    assert "Here is the current turn context:" in captured["prompt"]
+    assert "If the scene momentum is slow or stalled" in captured["prompt"]
     assert "Recent party actions:" in captured["prompt"]
     assert "Mike acted: I move to the doorway." in captured["prompt"]
+
+
+def test_generate_turn_action_prints_timing(monkeypatch, npc_db, capsys):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+
+    from dnd.npc.agent import NPCAgent
+    npc = NPCAgent(name="Kaelen", class_name="ranger",
+                   system_prompt="You are Kaelen.", session_id=npc_db)
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "I cover the exit."}
+    fake_response.raise_for_status.return_value = None
+
+    with patch("dnd.npc.agent.requests.post", return_value=fake_response):
+        npc.generate_turn_action([], "The enemy approaches.")
+
+    out = capsys.readouterr().out
+    assert "[Kaelen:" in out
+    assert "s]" in out
+
+
+def test_npc_turn_output_falls_back_when_it_speaks_for_others(monkeypatch, npc_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.json.return_value = {"response": "Aria: I draw my bow. Mike: Move left."}
+
+    with patch("dnd.npc.agent.requests.post", return_value=fake_response):
+        action = agent.generate_turn_action([], "The doorway is dark and quiet.", ["Mike acted: I move to the doorway."])
+
+    assert action == "I keep watch, cover the group, and point out the next safe opening."

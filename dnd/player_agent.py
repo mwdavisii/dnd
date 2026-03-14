@@ -1,8 +1,9 @@
 import os
+import time
 import requests
 from dotenv import load_dotenv
 
-from dnd.ui import thinking_message
+from dnd.ui import style, thinking_message
 from dnd.spectator import default_fallback_action, format_turn_context, validate_turn_output
 
 load_dotenv()
@@ -46,6 +47,7 @@ class AutoPlayerAgent:
         )
 
         print(thinking_message(f"{self.player_sheet.name} is thinking"))
+        _t0 = time.time()
         response = requests.post(
             f"{self.ollama_host}/api/generate",
             json={
@@ -56,6 +58,7 @@ class AutoPlayerAgent:
             timeout=(5, 120),
         )
         response.raise_for_status()
+        print(style(f"[Player: {time.time() - _t0:.1f}s]", "gray", dim=True))
         payload = response.json()
         return validate_turn_output(
             payload.get("response", "").strip(),
