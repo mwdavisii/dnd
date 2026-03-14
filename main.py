@@ -39,6 +39,7 @@ from dnd.character_creator import (
 from dnd.data import STORE_INVENTORY # Import STORE_INVENTORY
 from dnd.cli import CommandHandler
 from dnd.completion import enable_command_completion
+from dnd.spectator import build_scene_memory, build_turn_context, detect_scene_stall
 from dnd.ui import apply_base_style, banner, highlight_quotes, prompt_marker, section, speaker, style, wrap_text
 
 
@@ -246,7 +247,9 @@ def main():
         else:
             print(style(f"Session length: {target_rounds} rounds.", "silver", dim=True, italic=True))
         print(style("─" * 40, "gray"))
-        print(apply_base_style(highlight_quotes(wrap_text(dm.generate_opening_scene(player_sheet, npcs))), "parchment"))
+        opening_scene = dm.generate_opening_scene(player_sheet, npcs)
+        dm.generate_arc(opening_scene)
+        print(apply_base_style(highlight_quotes(wrap_text(opening_scene)), "parchment"))
         handler.print_turn_status()
         handler.print_suggested_actions()
 
@@ -325,25 +328,25 @@ def update_condition_durations():
     conn.commit()
     conn.close()
 
-def build_scene_memory(user_input: str, response: str) -> str:
-    clean_response = " ".join(response.split())
-    if len(clean_response) > 220:
-        clean_response = clean_response[:217] + "..."
-    return f"Player action: {user_input} | Outcome: {clean_response}"
-
-
 def process_dm_turn(user_input: str, dm, npcs, player_sheet, character_sheets, handler) -> None:
     print(f"\n{speaker('DM', 'gold')} ", end="")
     response = dm.generate_response(user_input, player_sheet, npcs)
+    previous_scene_memory = str(dm.world_state.get("scene_summary", "") or "")
     recent_party_actions = list(dm.world_state.get("recent_party_actions", []))
     recent_party_actions.append(f"{player_sheet.name} acted: {user_input}")
     dm.update_world_state("recent_party_actions", recent_party_actions[-6:])
     scene_memory = build_scene_memory(user_input, response)
     dm.update_world_state("scene_summary", scene_memory)
+    new_progress_events = dm.world_state.get("last_progress_events", [])
+    scene_stall_count = int(dm.world_state.get("scene_stall_count", 0) or 0)
+    if detect_scene_stall(previous_scene_memory, scene_memory, new_progress_events):
+        scene_stall_count += 1
+    else:
+        scene_stall_count = 0
+    dm.update_world_state("scene_stall_count", scene_stall_count)
     for npc in npcs.values():
         npc.remember_scene(scene_memory)
 
-    new_progress_events = dm.world_state.get("last_progress_events", [])
     reward_history = list(dm.world_state.get("reward_history", []))
     if "<level_up />" in response and new_progress_events:
         level_reward_key = f"level:{new_progress_events[0]}"
@@ -379,7 +382,14 @@ def run_spectator_turn(handler, dm, player_sheet, player_agent) -> str | None:
     if actor["type"] == "player":
         scene_summary = dm.world_state.get("scene_summary", "No scene summary recorded yet.")
         recent_party_actions = list(dm.world_state.get("recent_party_actions", []))
-        action = player_agent.generate_action(scene_summary, recent_party_actions)
+        turn_context = build_turn_context(
+            dm.world_state,
+            actor_name=player_sheet.name,
+            actor_type="player",
+            scene_summary=scene_summary,
+            recent_party_actions=recent_party_actions,
+        )
+        action = player_agent.generate_action(scene_summary, recent_party_actions, turn_context=turn_context)
         print(f"\n{speaker(player_sheet.name, 'cyan')} {action}")
         return action
     if actor["type"] == "companion":
