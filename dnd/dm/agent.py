@@ -370,7 +370,8 @@ class DungeonMaster:
                 "The situation shifts in response to your action, but the exact result is still unclear. "
                 "A brief opening remains in front of you. What do you do next?"
             )
-        if not re.search(r"What do you do\??$", cleaned):
+        in_resolution = self.world_state.get("story_phase") == "resolution"
+        if not in_resolution and not re.search(r"What do you do\??$", cleaned):
             cleaned = cleaned.rstrip(" .") + "\n\nWhat do you do next?"
         return cleaned
 

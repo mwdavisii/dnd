@@ -233,6 +233,21 @@ def test_sanitize_dm_response_removes_unsubmitted_player_follow_up(monkeypatch, 
     assert cleaned.endswith("What do you do next?")
 
 
+def test_sanitize_dm_response_skips_followup_question_in_resolution_phase(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("story_phase", "resolution")
+
+    cleaned = dm._sanitize_dm_response(
+        "The shadow beast is defeated. Peace returns to the village. The heroes celebrate.",
+        "Strike the killing blow.",
+    )
+
+    assert "What do you do next?" not in cleaned
+    assert "defeated" in cleaned
+
+
 def test_arc_pressure_instruction_forces_resolution_when_rounds_low(monkeypatch, dm_db):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")

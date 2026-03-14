@@ -168,14 +168,14 @@ def choose_game_mode() -> bool:
 def choose_session_round_budget() -> int:
     clear_screen()
     print("--- Session Length ---")
-    print("1. Short session (10 rounds)")
+    print("1. Short session (15 rounds)")
     print("2. Medium session (20 rounds)")
     print("3. Long session (30 rounds)")
     print("4. Custom round budget")
     while True:
         choice = input("> ").strip()
         if choice == "1":
-            return 10
+            return 15
         if choice == "2":
             return 20
         if choice == "3":
