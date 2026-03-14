@@ -238,7 +238,7 @@ def action_abandons_objective(action: str, turn_context: dict) -> bool:
     if story_phase in {"climax", "resolution"}:
         return True
     opening_midgame_verbs = {
-        "inspect", "examine", "study", "read", "browse", "window", "shop", "book", "stall", "counter"
+        "browse", "window", "shop", "stall", "counter"
     }
     if action_tokens & opening_midgame_verbs:
         return True
