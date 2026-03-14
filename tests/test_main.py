@@ -188,6 +188,49 @@ def test_detect_scene_stall_allows_progress_events():
     assert stalled is False
 
 
+def test_transcript_writer_receives_dm_response(monkeypatch, tmp_path):
+    """TranscriptWriter.write_dm_response is called with cleaned text and elapsed."""
+    from unittest.mock import MagicMock, patch
+    import main as main_module
+    from dnd.transcript import TranscriptWriter
+
+    transcript = MagicMock(spec=TranscriptWriter)
+
+    fake_dm = MagicMock()
+    fake_dm.generate_response.return_value = (
+        "Raw response with <level_up />",
+        "Cleaned response without tags.",
+    )
+    fake_dm.world_state = {
+        "scene_summary": "",
+        "recent_party_actions": [],
+        "last_progress_events": [],
+        "reward_history": [],
+    }
+
+    fake_player = MagicMock()
+    fake_player.name = "Kraton"
+
+    fake_handler = MagicMock()
+
+    with patch("main.build_scene_memory", return_value="scene"):
+        with patch("main.detect_scene_stall", return_value=False):
+            main_module.process_dm_turn(
+                "Look around.",
+                fake_dm,
+                {},
+                fake_player,
+                {},
+                fake_handler,
+                transcript=transcript,
+            )
+
+    transcript.write_dm_response.assert_called_once()
+    args = transcript.write_dm_response.call_args
+    assert "Cleaned response without tags." in args[0][0]
+    assert isinstance(args[0][1], float)  # elapsed
+
+
 @pytest.mark.ollama
 @pytest.mark.skipif(
     not os.getenv("OLLAMA_HOST") or not os.getenv("OLLAMA_MODEL"),

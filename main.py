@@ -1,9 +1,7 @@
 import re
 import os
 import json
-import sys
 import time
-import builtins
 from pathlib import Path
 from datetime import datetime
 from dnd.dm.agent import DungeonMaster
@@ -40,69 +38,8 @@ from dnd.data import STORE_INVENTORY # Import STORE_INVENTORY
 from dnd.cli import CommandHandler
 from dnd.completion import enable_command_completion
 from dnd.spectator import build_scene_memory, build_turn_context, detect_scene_stall
+from dnd.transcript import TranscriptWriter
 from dnd.ui import apply_base_style, banner, highlight_quotes, prompt_marker, section, speaker, style, wrap_text
-
-
-class TeeStream:
-    def __init__(self, primary, transcript_file):
-        self.primary = primary
-        self.transcript_file = transcript_file
-
-    def write(self, data):
-        self.primary.write(data)
-        self.transcript_file.write(strip_ansi(data))
-        return len(data)
-
-    def flush(self):
-        self.primary.flush()
-        self.transcript_file.flush()
-
-    def isatty(self):
-        return self.primary.isatty()
-
-
-class TranscriptSession:
-    def __init__(self, transcript_path: Path, save_path: str):
-        self.transcript_path = transcript_path
-        self.save_path = save_path
-        self._file = None
-        self._stdout = None
-        self._stderr = None
-        self._input = None
-
-    def start(self):
-        self.transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = self.transcript_path.open("a", encoding="utf-8")
-        self._file.write("# DnD Transcript\n\n")
-        self._file.write(f"- Save: `{format_save_label(Path(self.save_path))}`\n")
-        self._file.write(f"- Started: `{datetime.now().strftime('%Y-%m-%d %I:%M %p')}`\n\n")
-        self._file.write("```text\n")
-        self._stdout = sys.stdout
-        self._stderr = sys.stderr
-        self._input = builtins.input
-        sys.stdout = TeeStream(self._stdout, self._file)
-        sys.stderr = TeeStream(self._stderr, self._file)
-
-        def logged_input(prompt=""):
-            response = self._input(prompt)
-            self._file.write(f"{strip_ansi(response)}\n")
-            self._file.flush()
-            return response
-
-        builtins.input = logged_input
-        return self
-
-    def stop(self):
-        if self._stdout is not None:
-            sys.stdout = self._stdout
-        if self._stderr is not None:
-            sys.stderr = self._stderr
-        if self._input is not None:
-            builtins.input = self._input
-        if self._file is not None:
-            self._file.write("\n```\n")
-            self._file.flush()
-            self._file.close()
 
 
 def should_wait_before_spectator_turn(actor_type: str) -> bool:
@@ -132,11 +69,13 @@ def strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
-def choose_transcript_logging(save_path: str) -> Path | None:
+def choose_transcript_logging(save_path: str) -> "TranscriptWriter | None":
     choice = input(f"{style('Save a transcript for this session?', 'silver')} {style('[y/N]', 'cyan')} {prompt_marker()}").strip().lower()
     if choice not in {"y", "yes"}:
         return None
-    return create_transcript_path(save_path)
+    transcript_path = create_transcript_path(save_path)
+    model = os.getenv("OLLAMA_MODEL", "unknown")
+    return TranscriptWriter(path=transcript_path, save_path=save_path, model=model).start()
 
 
 def main():
@@ -148,14 +87,13 @@ def main():
     target_rounds = None
     spectator_pause_seconds = 0.0
     setup_completed = False
-    transcript_session = None
+    transcript = None
 
     # --- Game Setup ---
     selected_save = choose_save_file()
-    transcript_path = choose_transcript_logging(selected_save)
-    if transcript_path is not None:
-        transcript_session = TranscriptSession(transcript_path, selected_save).start()
-        print(style(f"Transcript logging enabled: {transcript_path}", "green", bold=True))
+    transcript = choose_transcript_logging(selected_save)
+    if transcript is not None:
+        print(style(f"Transcript logging enabled.", "green", bold=True))
     try:
         set_db_file(selected_save)
         is_new_save = not os.path.exists(selected_save)
@@ -247,8 +185,12 @@ def main():
         else:
             print(style(f"Session length: {target_rounds} rounds.", "silver", dim=True, italic=True))
         print(style("─" * 40, "gray"))
+        _t0 = time.time()
         opening_scene = dm.generate_opening_scene(player_sheet, npcs)
+        _opening_elapsed = time.time() - _t0
         dm.generate_arc(opening_scene)
+        if transcript:
+            transcript.write_opening_scene(opening_scene, elapsed=_opening_elapsed)
         print(apply_base_style(highlight_quotes(wrap_text(opening_scene)), "parchment"))
         handler.print_turn_status()
         handler.print_suggested_actions()
@@ -270,11 +212,13 @@ def main():
                     elif spectator_pause_seconds > 0 and should_pause:
                         print(style(f"Spectator mode: next turn in {spectator_pause_seconds:g}s", "silver", dim=True, italic=True))
                         time.sleep(spectator_pause_seconds)
-                    action = run_spectator_turn(handler, dm, player_sheet, player_agent)
+                    if transcript and actor.get("type") == "player":
+                        transcript.write_round_header(handler.round_number)
+                    action = run_spectator_turn(handler, dm, player_sheet, player_agent, transcript=transcript)
                     if action is None:
                         continue
                     if action:
-                        process_dm_turn(action, dm, npcs, player_sheet, character_sheets, handler)
+                        process_dm_turn(action, dm, npcs, player_sheet, character_sheets, handler, transcript=transcript)
                     continue
 
                 user_input = input(f"\n{prompt_marker()}")
@@ -291,7 +235,7 @@ def main():
                 elif not handler.player_can_act():
                     continue
 
-                process_dm_turn(user_input, dm, npcs, player_sheet, character_sheets, handler)
+                process_dm_turn(user_input, dm, npcs, player_sheet, character_sheets, handler, transcript=transcript)
 
 
             except (KeyboardInterrupt, EOFError):
@@ -300,8 +244,8 @@ def main():
 
             update_condition_durations()
     finally:
-        if transcript_session is not None:
-            transcript_session.stop()
+        if transcript is not None:
+            transcript.stop()
 
 def update_condition_durations():
     """Updates the duration of conditions for all characters."""
@@ -328,10 +272,14 @@ def update_condition_durations():
     conn.commit()
     conn.close()
 
-def process_dm_turn(user_input: str, dm, npcs, player_sheet, character_sheets, handler) -> None:
+def process_dm_turn(user_input: str, dm, npcs, player_sheet, character_sheets, handler, transcript=None) -> None:
     print(f"\n{speaker('DM', 'gold')} ", end="")
+    _t0 = time.time()
     raw_response, cleaned_response = dm.generate_response(user_input, player_sheet, npcs)
+    _dm_elapsed = time.time() - _t0
     response = raw_response  # used below for tag detection
+    if transcript:
+        transcript.write_dm_response(cleaned_response, _dm_elapsed)
     previous_scene_memory = str(dm.world_state.get("scene_summary", "") or "")
     recent_party_actions = list(dm.world_state.get("recent_party_actions", []))
     recent_party_actions.append(f"{player_sheet.name} acted: {user_input}")
@@ -378,7 +326,7 @@ def process_dm_turn(user_input: str, dm, npcs, player_sheet, character_sheets, h
     handler.print_suggested_actions()
 
 
-def run_spectator_turn(handler, dm, player_sheet, player_agent) -> str | None:
+def run_spectator_turn(handler, dm, player_sheet, player_agent, transcript=None) -> str | None:
     actor = handler.current_turn_actor
     if actor["type"] == "player":
         scene_summary = dm.world_state.get("scene_summary", "No scene summary recorded yet.")
@@ -391,6 +339,8 @@ def run_spectator_turn(handler, dm, player_sheet, player_agent) -> str | None:
             recent_party_actions=recent_party_actions,
         )
         action = player_agent.generate_action(scene_summary, recent_party_actions, turn_context=turn_context)
+        if transcript and action:
+            transcript.write_player_action(player_sheet.name, action)
         print(f"\n{speaker(player_sheet.name, 'cyan')} {action}")
         return action
     if actor["type"] == "companion":
