@@ -142,16 +142,33 @@ def test_generate_turn_action_prints_timing(monkeypatch, npc_db, capsys):
     assert "s]" in out
 
 
-def test_npc_turn_output_falls_back_when_it_speaks_for_others(monkeypatch, npc_db):
+def test_npc_turn_output_strips_own_name_prefix(monkeypatch, npc_db):
+    # "Aria: I draw my bow." → own name prefix stripped → returns clean action
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")
     agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
 
     fake_response = MagicMock()
     fake_response.raise_for_status.return_value = None
-    fake_response.json.return_value = {"response": "Aria: I draw my bow. Mike: Move left."}
+    fake_response.json.return_value = {"response": "Aria: I draw my bow on the doorway."}
 
     with patch("dnd.npc.agent.requests.post", return_value=fake_response):
-        action = agent.generate_turn_action([], "The doorway is dark and quiet.", ["Mike acted: I move to the doorway."])
+        action = agent.generate_turn_action([], "The doorway is dark and quiet.")
+
+    assert action == "I draw my bow on the doorway."
+
+
+def test_npc_turn_output_falls_back_on_outcome_label(monkeypatch, npc_db):
+    # "Outcome: ..." → role label → fallback
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.json.return_value = {"response": "Outcome: Aria moves to the doorway."}
+
+    with patch("dnd.npc.agent.requests.post", return_value=fake_response):
+        action = agent.generate_turn_action([], "The doorway is dark and quiet.")
 
     assert action == "I keep watch, cover the group, and point out the next safe opening."

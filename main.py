@@ -341,7 +341,14 @@ def run_spectator_turn(handler, dm, player_sheet, player_agent, transcript=None)
         print(f"\n{speaker(player_sheet.name, 'cyan')} {action}")
         return action
     if actor["type"] == "companion":
+        _t0 = time.time()
         handler.handle("/npcturn")
+        if transcript:
+            transcript.write_companion_action(
+                actor["name"],
+                handler.last_companion_response,
+                elapsed=time.time() - _t0,
+            )
         return None
     skip_dm, prompt = handler.handle("/enemyturn")
     if skip_dm:

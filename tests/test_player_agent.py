@@ -50,17 +50,34 @@ def test_auto_player_agent_falls_back_on_non_latin_response(monkeypatch, player_
     assert action == "Mike studies the scene, moves toward the clearest lead, and stays ready to react."
 
 
-def test_auto_player_agent_rejects_speaker_labeled_output(monkeypatch, player_sheet):
+def test_auto_player_agent_strips_role_label_and_actor_prefix(monkeypatch, player_sheet):
+    # "DM: Mike: ..." → strips DM: role label, then strips "Mike:" actor prefix → returns clean action
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")
     agent = AutoPlayerAgent(player_sheet)
 
     fake_response = MagicMock()
     fake_response.raise_for_status.return_value = None
-    fake_response.json.return_value = {"response": "DM: Mike: I cast a spell. Bram: Stay close."}
+    fake_response.json.return_value = {"response": "DM: Mike: I cast a spell at the guard."}
 
     with patch("dnd.player_agent.requests.post", return_value=fake_response):
-        action = agent.generate_action("The square is tense.", ["Mike acted: I look around."])
+        action = agent.generate_action("The square is tense.", [])
+
+    assert action == "I cast a spell at the guard."
+
+
+def test_auto_player_agent_falls_back_on_result_label_output(monkeypatch, player_sheet):
+    # "Result: ..." → role label caught by _strip_other_speaker_labels → empty → fallback
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    agent = AutoPlayerAgent(player_sheet)
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.json.return_value = {"response": "Result: The adventurers press forward."}
+
+    with patch("dnd.player_agent.requests.post", return_value=fake_response):
+        action = agent.generate_action("The square is tense.", [])
 
     assert action == "Mike studies the scene, moves toward the clearest lead, and stays ready to react."
 

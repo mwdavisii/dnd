@@ -4,6 +4,7 @@ from collections import Counter
 from dnd.data import HELP_TOPICS, MONSTER_DATA, RULES_REFERENCE, SPELL_DATA, STORE_INVENTORY, WEAPON_DATA
 from dnd.game import roll_dice
 from dnd.database import get_db_connection
+from dnd.spectator import build_turn_context
 from dnd.ui import speaker, style
 
 COMMAND_NAMES = [
@@ -53,6 +54,7 @@ class CommandHandler:
         self.turn_index = 0
         self.round_number = int(self.dm.world_state.get("current_round", 1) or 1)
         self.encounter = None
+        self.last_companion_response: str = ""
         self._sync_story_pacing()
 
     def handle(self, user_input: str) -> tuple[bool, str]:
@@ -246,8 +248,21 @@ class CommandHandler:
                 return (True, "")
             scene_summary = self.dm.world_state.get("scene_summary", "No scene summary recorded yet.")
             recent_party_actions = list(self._world_state_list("recent_party_actions"))
+            turn_context = build_turn_context(
+                self.dm.world_state,
+                actor_name=npc.name,
+                actor_type="companion",
+                scene_summary=scene_summary,
+                recent_party_actions=recent_party_actions,
+            )
             print(f"\n{speaker(npc.name, 'magenta')} ", end="")
-            response = npc.generate_turn_action(self.dm.history, scene_summary, recent_party_actions)
+            response = npc.generate_turn_action(
+                self.dm.history,
+                scene_summary,
+                recent_party_actions,
+                turn_context=turn_context,
+            )
+            self.last_companion_response = response or ""
             if response:
                 print(response)
                 self.dm.add_history("assistant", f"{npc.name}: {response}")

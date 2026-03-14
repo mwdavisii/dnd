@@ -242,22 +242,26 @@ def action_abandons_objective(action: str, turn_context: dict) -> bool:
     }
     if action_tokens & opening_midgame_verbs:
         return True
-    return len(action_tokens) >= 3
+    return False
+
+
+_ROLE_LABELS = {"assistant", "dm", "narrator", "player", "companion", "outcome", "result"}
 
 
 def _strip_other_speaker_labels(text: str, actor_name: str) -> str:
-    speaker_pattern = re.compile(r"\b([A-Z][a-zA-Z'-]{1,20})\s*:\s*")
-    parts = []
-    index = 0
-    for match in speaker_pattern.finditer(text):
-        speaker = match.group(1)
-        if speaker.lower() == actor_name.lower():
-            parts.append(text[index:match.start()])
-            index = match.end()
-            continue
+    # Only inspect a leading "Word: " pattern — mid-sentence colons (e.g. "Move to Mill: ...") are not speaker labels.
+    speaker_pattern = re.compile(r"^([A-Z][a-zA-Z'-]{1,20})\s*:\s*")
+    match = speaker_pattern.match(text)
+    if not match:
+        return text
+    speaker = match.group(1)
+    if speaker.lower() == actor_name.lower():
+        return text[match.end():].strip()
+    # Discard only if the label is a known role word or looks like another character name.
+    # Unknown words (e.g. "Move:", "Option:", "Note:") are left in place.
+    if speaker.lower() in _ROLE_LABELS:
         return ""
-    parts.append(text[index:])
-    return "".join(parts).strip()
+    return text
 
 
 def _normalize_for_comparison(text: str) -> str:

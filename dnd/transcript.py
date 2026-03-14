@@ -39,8 +39,9 @@ class TranscriptWriter:
     def write_player_action(self, actor_name: str, action: str):
         self._write(f"### {actor_name} — Player\n\n> {action}\n\n")
 
-    def write_companion_action(self, actor_name: str, action: str):
-        self._write(f"### {actor_name} — Companion\n\n> {action}\n\n---\n\n")
+    def write_companion_action(self, actor_name: str, action: str, elapsed: float | None = None):
+        timing = f" *({elapsed:.1f}s)*" if elapsed is not None else ""
+        self._write(f"### {actor_name} — Companion{timing}\n\n> {action}\n\n---\n\n")
 
     def write_dm_response(self, text: str, elapsed: float):
         self._write(f"### Dungeon Master *({elapsed:.1f}s)*\n\n{text}\n\n---\n\n")
