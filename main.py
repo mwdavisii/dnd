@@ -360,7 +360,7 @@ def run_spectator_turn(handler, dm, player_sheet, player_agent, transcript=None)
         )
         if transcript and action:
             transcript.write_player_action(player_sheet.name, action)
-        print(f"\n{speaker(player_sheet.name, 'cyan')} {action}")
+        print(f"\n{speaker(player_sheet.name, 'cyan')} {wrap_text(action)}")
         return action
     if actor["type"] == "companion":
         _t0 = time.time()
