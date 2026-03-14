@@ -65,9 +65,6 @@ def create_transcript_path(save_path: str, now: datetime | None = None) -> Path:
     return Path("logs") / f"{save_label}_{timestamp}.md"
 
 
-def strip_ansi(text: str) -> str:
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
-
 
 def choose_transcript_logging(save_path: str) -> "TranscriptWriter | None":
     choice = input(f"{style('Save a transcript for this session?', 'silver')} {style('[y/N]', 'cyan')} {prompt_marker()}").strip().lower()

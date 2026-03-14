@@ -14,7 +14,7 @@ from main import (
     derive_story_phase,
     run_initial_setup,
     should_wait_before_spectator_turn,
-    strip_ansi,
+
 )
 
 
@@ -98,8 +98,6 @@ def test_create_transcript_path_uses_markdown_and_save_label():
     assert transcript_path == Path("logs/my_campaign_20260313_094500.md")
 
 
-def test_strip_ansi_removes_terminal_sequences():
-    assert strip_ansi("\033[31mDanger\033[0m") == "Danger"
 
 
 def test_build_turn_context_uses_structured_world_state():
