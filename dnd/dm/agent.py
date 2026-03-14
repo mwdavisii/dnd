@@ -247,7 +247,7 @@ class DungeonMaster:
             self.add_history("assistant", cleaned_response)
             print(apply_base_style(self._format_narration(cleaned_response), "parchment"))
             self._print_pending_encounter_hint()
-            return final_response
+            return final_response, cleaned_response
 
         except requests.exceptions.RequestException as e:
             error_message = f"Error connecting to Ollama: {e}"

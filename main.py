@@ -330,7 +330,8 @@ def update_condition_durations():
 
 def process_dm_turn(user_input: str, dm, npcs, player_sheet, character_sheets, handler) -> None:
     print(f"\n{speaker('DM', 'gold')} ", end="")
-    response = dm.generate_response(user_input, player_sheet, npcs)
+    raw_response, cleaned_response = dm.generate_response(user_input, player_sheet, npcs)
+    response = raw_response  # used below for tag detection
     previous_scene_memory = str(dm.world_state.get("scene_summary", "") or "")
     recent_party_actions = list(dm.world_state.get("recent_party_actions", []))
     recent_party_actions.append(f"{player_sheet.name} acted: {user_input}")

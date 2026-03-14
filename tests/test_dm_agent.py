@@ -517,6 +517,28 @@ def test_generate_response_prints_timing(monkeypatch, dm_db, player_sheet, capsy
     assert "s]" in out
 
 
+def test_generate_response_returns_raw_and_cleaned_tuple(monkeypatch, dm_db, player_sheet):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.iter_lines.return_value = [
+        b'{"response":"The guard nods. <level_up />","done":false}',
+        b'{"done":true}',
+    ]
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        with patch.object(dm, "_evaluate_beat"):
+            result = dm.generate_response("Look around.", player_sheet, {})
+
+    assert isinstance(result, tuple)
+    raw, cleaned = result
+    assert "<level_up />" in raw
+    assert "<level_up />" not in cleaned
+
+
 def test_format_turn_context_includes_beat_goal():
     ctx = {
         "actor_name": "Kraton",
