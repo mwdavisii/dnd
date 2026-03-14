@@ -249,7 +249,7 @@ def test_arc_pressure_instruction_detects_stalled_scene(monkeypatch, dm_db):
     dm.update_world_state("scene_stall_count", 3)
     dm.update_world_state("remaining_rounds", 5)
 
-    assert "Introduce an immediate reveal" in dm._arc_pressure_instruction()
+    assert "SCENE STALLED" in dm._arc_pressure_instruction()
 
 
 def test_objective_lock_instruction_prefers_current_thread(monkeypatch, dm_db):

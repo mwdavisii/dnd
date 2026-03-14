@@ -229,6 +229,7 @@ class DungeonMaster:
             "Resolve only the submitted action and the world's immediate response.\n"
             "Do not add extra assistant turns, recap loops, or speculative follow-up actions by the player.\n"
             "Do not include labels such as Assistant:, User:, Outcome:, or repeated speaker prefixes.\n"
+            f"Arc directive: {self._arc_pressure_instruction()}\n"
             "End with one direct question asking what the player does next."
         )
 
@@ -441,18 +442,18 @@ class DungeonMaster:
         remaining_rounds = int(self.world_state.get("remaining_rounds", 0) or 0)
         stall_count = int(self.world_state.get("scene_stall_count", 0) or 0)
         if remaining_rounds <= 2:
-            return "Force a decisive confrontation, rescue, escape, or clear ending in this scene."
+            return "FINAL SCENE: The story must conclude this turn. Force a decisive confrontation, escape, rescue, or resolution. Do not open new threads."
         if stall_count >= 3:
-            return "The scene has stalled. Introduce an immediate reveal, enemy move, ticking deadline, or irreversible consequence now."
+            return "SCENE STALLED: Do not repeat another cautious beat. Immediately introduce a threat, attack, forced reveal, or irreversible event that changes the situation."
         if stall_count >= 1:
-            return "Avoid another cautious repetition. Advance to a new clue, threat, or forced choice."
+            return "SLOW SCENE: Advance to a new clue, threat, or forced choice. Do not repeat the same cautious beat."
         if story_phase == "climax":
-            return "Bring the main threat or decisive truth into direct contact with the party."
+            return "CLIMAX NOW: Stop investigation. Force the main threat or conflict into direct contact with the party this turn — an attack, ambush, revelation, or irreversible event that demands immediate response."
         if story_phase == "resolution":
-            return "Resolve the main thread and show the outcome."
+            return "RESOLUTION: End the main conflict this turn. Show the outcome and consequences. Do not open new plotlines or mysteries."
         if story_phase == "midgame":
-            return "Complicate the mission and force a meaningful choice."
-        return "Commit to the hook and move toward the first real obstacle."
+            return "MIDGAME: Complicate the mission. Introduce a new obstacle, threat, or forced choice that escalates the stakes."
+        return "OPENING: Pursue the hook and move toward the first concrete obstacle or threat."
 
     def _objective_lock_instruction(self) -> str:
         objective = str(self.world_state.get("objective", "") or "").strip()

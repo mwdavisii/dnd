@@ -5,7 +5,7 @@ from dnd.data import _BEAT_PHASE, HELP_TOPICS, MONSTER_DATA, RULES_REFERENCE, SP
 from dnd.game import roll_dice
 from dnd.database import get_db_connection
 from dnd.spectator import build_turn_context
-from dnd.ui import speaker, style
+from dnd.ui import speaker, style, wrap_text
 
 COMMAND_NAMES = [
     "/addcondition",
@@ -264,7 +264,7 @@ class CommandHandler:
             )
             self.last_companion_response = response or ""
             if response:
-                print(response)
+                print(wrap_text(response))
                 self.dm.add_history("assistant", f"{npc.name}: {response}")
                 self._record_party_action(f"{npc.name} acted: {response}")
             self.advance_turn()
