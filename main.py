@@ -36,7 +36,7 @@ from dnd.character_creator import (
 from dnd.data import STORE_INVENTORY # Import STORE_INVENTORY
 from dnd.cli import CommandHandler
 from dnd.completion import enable_command_completion
-from dnd.spectator import build_scene_memory, build_turn_context, detect_scene_stall, is_fallback_action, _strip_fallback_marker
+from dnd.spectator import build_scene_memory, build_turn_context, detect_scene_stall, extract_open_threads, is_fallback_action, _strip_fallback_marker
 from dnd.transcript import TranscriptWriter
 from dnd.ui import apply_base_style, banner, highlight_quotes, prompt_marker, section, speaker, style, wrap_text
 
@@ -237,7 +237,10 @@ def main():
                     if action is None:
                         continue
                     if action:
-                        process_dm_turn(action, dm, npcs, player_sheet, character_sheets, handler, transcript=transcript)
+                        story_complete = process_dm_turn(action, dm, npcs, player_sheet, character_sheets, handler, transcript=transcript)
+                        if story_complete:
+                            print(style("\nThe adventure concludes.", "silver", dim=True, italic=True))
+                            break
                     continue
 
                 user_input = input(f"\n{prompt_marker()}")
@@ -254,7 +257,10 @@ def main():
                 elif not handler.player_can_act():
                     continue
 
-                process_dm_turn(user_input, dm, npcs, player_sheet, character_sheets, handler, transcript=transcript)
+                story_complete = process_dm_turn(user_input, dm, npcs, player_sheet, character_sheets, handler, transcript=transcript)
+                if story_complete:
+                    print(style("\nThe adventure concludes.", "silver", dim=True, italic=True))
+                    break
 
 
             except (KeyboardInterrupt, EOFError):
@@ -291,7 +297,7 @@ def update_condition_durations():
     conn.commit()
     conn.close()
 
-def process_dm_turn(user_input: str, dm, npcs, player_sheet, character_sheets, handler, transcript=None) -> None:
+def process_dm_turn(user_input: str, dm, npcs, player_sheet, character_sheets, handler, transcript=None) -> bool:
     print(f"\n{speaker('DM', 'gold')} ", end="")
     _t0 = time.time()
     raw_response, cleaned_response = dm.generate_response(user_input, player_sheet, npcs)
@@ -308,11 +314,17 @@ def process_dm_turn(user_input: str, dm, npcs, player_sheet, character_sheets, h
     dm.update_world_state("scene_summary", scene_memory)
     new_progress_events = dm.world_state.get("last_progress_events", [])
     scene_stall_count = int(dm.world_state.get("scene_stall_count", 0) or 0)
-    if detect_scene_stall(previous_scene_memory, scene_memory, new_progress_events):
+    previous_threads = str(dm.world_state.get("previous_open_threads", "") or "")
+    current_threads = extract_open_threads(str(dm.world_state.get("story_summary", "") or ""))
+    if detect_scene_stall(
+        previous_scene_memory, scene_memory, new_progress_events,
+        previous_threads=previous_threads, current_threads=current_threads,
+    ):
         scene_stall_count += 1
     else:
         scene_stall_count = 0
     dm.update_world_state("scene_stall_count", scene_stall_count)
+    dm.update_world_state("previous_open_threads", current_threads)
     for npc in npcs.values():
         npc.remember_scene(scene_memory)
 
@@ -344,6 +356,7 @@ def process_dm_turn(user_input: str, dm, npcs, player_sheet, character_sheets, h
     handler.advance_turn()
     handler.print_turn_status()
     handler.print_suggested_actions()
+    return dm.story_is_complete()
 
 
 def run_spectator_turn(handler, dm, player_sheet, player_agent, transcript=None) -> str | None:
@@ -363,6 +376,7 @@ def run_spectator_turn(handler, dm, player_sheet, player_agent, transcript=None)
             scene_summary=scene_summary,
             recent_party_actions=recent_party_actions,
             turn_context=turn_context,
+            actor_type="player",
         )
         display_action = _strip_fallback_marker(action) if action else action
         if transcript and display_action:

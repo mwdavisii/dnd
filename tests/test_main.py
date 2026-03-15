@@ -343,6 +343,51 @@ def test_process_dm_turn_returns_story_completion(monkeypatch):
     assert story_complete is True
 
 
+def test_process_dm_turn_passes_threads_to_stall_detection(monkeypatch):
+    from unittest.mock import MagicMock, patch, call
+    import main as main_module
+
+    fake_dm = MagicMock()
+    fake_dm.generate_response.return_value = (
+        "The figure blocks your path again.",
+        "The figure blocks your path again.",
+    )
+    fake_dm.world_state = {
+        "scene_summary": "Previous scene.",
+        "recent_party_actions": [],
+        "last_progress_events": [],
+        "reward_history": [],
+        "scene_stall_count": 0,
+        "story_summary": (
+            "EVENTS SO FAR:\n- Arrived at mill\n\n"
+            "OPEN THREADS:\n- Cloaked figure blocking entrance\n\n"
+            "ESCALATION LEVEL: Medium."
+        ),
+        "previous_open_threads": "- Cloaked figure blocking entrance",
+    }
+    fake_dm.story_is_complete.return_value = False
+
+    fake_player = MagicMock()
+    fake_player.name = "Kraton"
+
+    fake_handler = MagicMock()
+
+    captured_stall_args = {}
+
+    original_detect = main_module.detect_scene_stall
+
+    def spy_detect(*args, **kwargs):
+        captured_stall_args.update(kwargs)
+        return original_detect(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "build_scene_memory", lambda *_args, **_kwargs: "scene")
+    monkeypatch.setattr(main_module, "detect_scene_stall", spy_detect)
+
+    main_module.process_dm_turn("Step aside.", fake_dm, {}, fake_player, {}, fake_handler)
+
+    assert "current_threads" in captured_stall_args or "previous_threads" in captured_stall_args
+
+
 @pytest.mark.ollama
 @pytest.mark.skipif(
     not os.getenv("OLLAMA_HOST") or not os.getenv("OLLAMA_MODEL"),
