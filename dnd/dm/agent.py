@@ -333,6 +333,7 @@ class DungeonMaster:
             cleaned_response = self._sanitize_dm_response(final_response, prompt)
             cleaned_response = self._extract_structured_updates(cleaned_response)
             self._evaluate_beat(cleaned_response)
+            self._update_story_summary(prompt, cleaned_response)
             self.add_history("assistant", cleaned_response)
             print(apply_base_style(self._format_narration(cleaned_response), "parchment"))
             self._print_pending_encounter_hint()

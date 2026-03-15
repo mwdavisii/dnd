@@ -211,7 +211,8 @@ def test_generate_response_includes_pacing_context(monkeypatch, dm_db, player_sh
     fake_response.iter_lines.return_value = [b'{"response":"The trail bends toward the ruins.","done":false}', b'{"done":true}']
 
     with patch("dnd.dm.agent.requests.post", return_value=fake_response) as mock_post:
-        dm.generate_response("Look for tracks.", player_sheet, {})
+        with patch.object(dm, "_update_story_summary"):
+            dm.generate_response("Look for tracks.", player_sheet, {})
 
     prompt = mock_post.call_args.kwargs["json"]["prompt"]
     assert "Session Pacing:" in prompt
@@ -503,7 +504,8 @@ def test_generate_response_includes_current_beat_goal(monkeypatch, dm_db, player
 
     with patch("dnd.dm.agent.requests.post", return_value=fake_response) as mock_post:
         with patch.object(dm, "_evaluate_beat"):
-            dm.generate_response("Follow him.", player_sheet, {})
+            with patch.object(dm, "_update_story_summary"):
+                dm.generate_response("Follow him.", player_sheet, {})
 
     prompt = mock_post.call_args.kwargs["json"]["prompt"]
     assert "Follow the cloaked man to discover where he is going." in prompt
@@ -744,6 +746,29 @@ def test_update_story_summary_seeds_initial_summary(monkeypatch, dm_db):
         dm._update_story_summary("Look around.", "You see a village square.")
 
     assert "No prior summary" in captured["prompt"]
+
+
+def test_generate_response_calls_update_story_summary(monkeypatch, dm_db, player_sheet):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.iter_lines.return_value = [
+        b'{"response":"The trail bends toward the ruins.","done":false}',
+        b'{"done":true}',
+    ]
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        with patch.object(dm, "_evaluate_beat"):
+            with patch.object(dm, "_update_story_summary") as mock_update:
+                dm.generate_response("Follow the trail.", player_sheet, {})
+
+    mock_update.assert_called_once()
+    args = mock_update.call_args[0]
+    assert args[0] == "Follow the trail."  # player_action
+    assert "trail" in args[1].lower() or "ruins" in args[1].lower()  # dm_response
 
 
 def test_evaluate_beat_syncs_story_phase_on_llm_advance(monkeypatch, dm_db):
