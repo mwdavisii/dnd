@@ -144,6 +144,30 @@ def test_extract_structured_updates_strips_reward_tags(monkeypatch, dm_db):
     assert "<level_up" not in cleaned
 
 
+def test_extract_structured_updates_persists_progress_resolution_and_ending(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    cleaned = dm._extract_structured_updates(
+        (
+            "The sigil gutters out as the gate ward stabilizes.\n"
+            '<progress id="hooded_figure_unmasked" />\n'
+            '<resolve id="ritual_stopped" />\n'
+            '<ending type="victory" />'
+        )
+    )
+
+    assert "<progress" not in cleaned
+    assert "<resolve" not in cleaned
+    assert "<ending" not in cleaned
+    assert dm.world_state["last_progress_events"] == ["hooded_figure_unmasked", "ritual_stopped"]
+    assert "ritual_stopped" in dm.world_state["resolved_events"]
+    assert "ending_victory" in dm.world_state["resolved_events"]
+    assert dm.world_state["story_complete"] is True
+    assert dm.world_state["ending_type"] == "victory"
+
+
 
 def test_encounter_guard_tag_ignored_when_guards_are_helping(monkeypatch, dm_db):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
@@ -246,6 +270,20 @@ def test_sanitize_dm_response_skips_followup_question_in_resolution_phase(monkey
 
     assert "What do you do next?" not in cleaned
     assert "defeated" in cleaned
+
+
+def test_sanitize_dm_response_skips_followup_question_when_ending_tag_present(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    cleaned = dm._sanitize_dm_response(
+        'The sigil cracks and the square falls quiet.\n<ending type="victory" />',
+        "Strike the sigil.",
+    )
+
+    assert "What do you do next?" not in cleaned
+    assert "The sigil cracks" in cleaned
 
 
 def test_arc_pressure_instruction_forces_resolution_when_rounds_low(monkeypatch, dm_db):
@@ -629,6 +667,18 @@ def test_advance_beat_if_past_deadline_forces_advance(monkeypatch, dm_db):
     dm._advance_beat_if_past_deadline()
     assert dm.world_state["current_beat"] == "complication"
     assert dm.world_state["story_phase"] == "midgame"
+
+
+def test_story_summary_prompt_exists():
+    from dnd.dm.prompts import STORY_SUMMARY_PROMPT
+    assert "EVENTS SO FAR" in STORY_SUMMARY_PROMPT
+    assert "OPEN THREADS" in STORY_SUMMARY_PROMPT
+    assert "ESCALATION LEVEL" in STORY_SUMMARY_PROMPT
+    assert "{previous_summary}" in STORY_SUMMARY_PROMPT
+    assert "{player_action}" in STORY_SUMMARY_PROMPT
+    assert "{dm_response}" in STORY_SUMMARY_PROMPT
+    assert "{current_beat}" in STORY_SUMMARY_PROMPT
+    assert "{beat_goal}" in STORY_SUMMARY_PROMPT
 
 
 def test_evaluate_beat_syncs_story_phase_on_llm_advance(monkeypatch, dm_db):
