@@ -804,6 +804,60 @@ def test_generate_response_includes_story_summary_in_prompt(monkeypatch, dm_db, 
     assert "Last turn:" in prompt
 
 
+def test_story_summary_accumulates_across_rounds(monkeypatch, dm_db, player_sheet):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("current_beat", "hook")
+    dm.update_world_state("story_arc", {
+        "hook": {"goal": "Investigate.", "key_npcs": [], "success_condition": "Clue found."},
+        "complication": {"goal": "Escape.", "key_npcs": [], "success_condition": "Party escapes."},
+    })
+
+    round_1_summary = (
+        "EVENTS SO FAR:\n- Party arrived in Ashford\n\n"
+        "OPEN THREADS:\n- Sealed letter\n\n"
+        "ESCALATION LEVEL: Low tension."
+    )
+    round_2_summary = (
+        "EVENTS SO FAR:\n- Party arrived in Ashford\n- Opened the letter, found raider warning\n\n"
+        "OPEN THREADS:\n- Raider threat from the north\n\n"
+        "ESCALATION LEVEL: Rising tension. Raiders confirmed nearby."
+    )
+
+    call_count = [0]
+    def fake_post(_url, json=None, **kwargs):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        prompt_text = str(json.get("prompt", ""))
+        # Distinguish between streaming DM calls and non-streaming summary/beat calls
+        if kwargs.get("stream", False) or json.get("stream", False):
+            # This is a generate_response streaming call
+            response.iter_lines.return_value = [
+                b'{"response":"Something happens in the story.","done":false}',
+                b'{"done":true}',
+            ]
+        elif "EVENTS SO FAR" in prompt_text or "story editor" in prompt_text:
+            # This is a summary update call
+            call_count[0] += 1
+            if call_count[0] == 1:
+                response.json.return_value = {"response": round_1_summary}
+            else:
+                response.json.return_value = {"response": round_2_summary}
+        else:
+            # This is a beat evaluation call
+            response.json.return_value = {"response": "NO"}
+        return response
+
+    with patch("dnd.dm.agent.requests.post", side_effect=fake_post):
+        dm.generate_response("Look around.", player_sheet, {})
+        assert "Party arrived in Ashford" in dm.world_state.get("story_summary", "")
+
+        dm.generate_response("Open the letter.", player_sheet, {})
+        assert "raider warning" in dm.world_state.get("story_summary", "").lower()
+        assert "Rising tension" in dm.world_state.get("story_summary", "")
+
+
 def test_evaluate_beat_syncs_story_phase_on_llm_advance(monkeypatch, dm_db):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")
