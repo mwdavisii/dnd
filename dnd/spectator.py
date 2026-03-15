@@ -324,8 +324,10 @@ def detect_scene_stall(
             thread_overlap = len(prev_tokens & curr_tokens) / max(len(prev_tokens | curr_tokens), 1)
             if thread_overlap >= 0.70:
                 return True
+            # Threads changed substantially — trust the thread signal over scene summary
+            return False
 
-    # Fallback: existing scene summary overlap check
+    # Fallback: existing scene summary overlap check (only when threads unavailable)
     previous = _normalize_for_comparison(previous_summary)
     current = _normalize_for_comparison(new_summary)
     if not previous or not current:
