@@ -18,6 +18,7 @@ class NPCAgent:
         self.system_prompt = system_prompt
         self.history = []
         self.memory = load_npc_memories(session_id, name)
+        self.recent_actions = []
         self.ollama_host = os.getenv("OLLAMA_HOST")
         self.ollama_model = os.getenv("OLLAMA_MODEL")
         if not self.ollama_host or not self.ollama_model:
@@ -102,6 +103,7 @@ class NPCAgent:
             f"{self._format_party_actions(party_actions)}\n\n"
             "Here is the recent party history:\n"
             f"{self._format_history(game_context[-8:])}\n\n"
+            f"{self._format_own_recent_actions()}\n"
             f"It is {self.name}'s turn.\n"
             "In 1-2 short sentences, describe only your own action, movement, warning, or observation.\n"
             "Coordinate with recent ally actions when it makes sense.\n"
@@ -132,6 +134,8 @@ class NPCAgent:
             if final_response:
                 self.history.append({"role": "assistant", "content": final_response})
                 self.remember(f"{self.name} took a turn: {final_response}")
+                self.recent_actions.append(final_response)
+                self.recent_actions = self.recent_actions[-3:]
             return final_response
         except requests.exceptions.RequestException as e:
             error_message = f"Error connecting to Ollama: {e}"
@@ -197,6 +201,16 @@ class NPCAgent:
         if not self.memory:
             return "- No strong memories yet."
         return "\n".join(f"- {entry}" for entry in self.memory[-8:])
+
+    def _format_own_recent_actions(self) -> str:
+        if not self.recent_actions:
+            return ""
+        lines = "\n".join(f"- {action}" for action in self.recent_actions)
+        return (
+            "Your recent actions (do NOT repeat these):\n"
+            f"{lines}\n"
+            "You MUST do something DIFFERENT from the above.\n"
+        )
 
     def _format_party_actions(self, actions: list[str]) -> str:
         if not actions:

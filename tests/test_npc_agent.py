@@ -244,3 +244,59 @@ def test_npc_turn_prompt_includes_story_summary(monkeypatch, npc_db):
 
     assert "EVENTS SO FAR" in captured["prompt"]
     assert "Party arrived at Ashford" in captured["prompt"]
+
+
+def test_npc_tracks_own_recent_actions(monkeypatch, npc_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.json.return_value = {"response": "I scout the eastern perimeter."}
+
+    with patch("dnd.npc.agent.requests.post", return_value=fake_response):
+        agent.generate_turn_action([], "The scene is tense.")
+
+    assert len(agent.recent_actions) == 1
+    assert "scout" in agent.recent_actions[0].lower()
+
+
+def test_npc_recent_actions_capped_at_three(monkeypatch, npc_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
+    agent.recent_actions = ["action one", "action two", "action three"]
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.json.return_value = {"response": "I check the back entrance."}
+
+    with patch("dnd.npc.agent.requests.post", return_value=fake_response):
+        agent.generate_turn_action([], "The scene continues.")
+
+    assert len(agent.recent_actions) == 3
+    assert "action one" not in agent.recent_actions
+    assert "check the back entrance" in agent.recent_actions[-1].lower()
+
+
+def test_npc_prompt_includes_own_recent_actions(monkeypatch, npc_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
+    agent.recent_actions = ["I raise my shield.", "I move to flank the enemy."]
+
+    captured = {}
+    def fake_post(_url, json=None, timeout=None):
+        captured["prompt"] = json["prompt"]
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"response": "I search for a hidden passage."}
+        return response
+
+    with patch("dnd.npc.agent.requests.post", side_effect=fake_post):
+        agent.generate_turn_action([], "The hallway is dark.")
+
+    assert "Your recent actions (do NOT repeat these)" in captured["prompt"]
+    assert "I raise my shield." in captured["prompt"]
+    assert "I move to flank the enemy." in captured["prompt"]
