@@ -100,6 +100,24 @@ def test_create_transcript_path_uses_markdown_and_save_label():
 
 
 
+def test_build_turn_context_includes_story_summary():
+    context = build_turn_context(
+        {
+            "location": "Ashford",
+            "objective": "Investigate.",
+            "story_phase": "opening",
+            "current_round": 1,
+            "target_rounds": 10,
+            "remaining_rounds": 9,
+            "story_summary": "EVENTS SO FAR:\n- Arrived in Ashford\n\nOPEN THREADS:\n- Letter\n\nESCALATION LEVEL: Low.",
+        },
+        actor_name="Kraton",
+        actor_type="player",
+        scene_summary="The square is quiet.",
+    )
+    assert context["story_summary"] == "EVENTS SO FAR:\n- Arrived in Ashford\n\nOPEN THREADS:\n- Letter\n\nESCALATION LEVEL: Low."
+
+
 def test_build_turn_context_uses_structured_world_state():
     context = build_turn_context(
         {
@@ -229,6 +247,44 @@ def test_transcript_writer_receives_dm_response(monkeypatch, tmp_path):
     args = transcript.write_dm_response.call_args
     assert "Cleaned response without tags." in args[0][0]
     assert isinstance(args[0][1], float)  # elapsed
+
+
+def test_process_dm_turn_returns_story_completion(monkeypatch):
+    from unittest.mock import MagicMock
+    import main as main_module
+
+    fake_dm = MagicMock()
+    fake_dm.generate_response.return_value = (
+        'The sigil breaks.\n<ending type="victory" />',
+        "The sigil breaks.",
+    )
+    fake_dm.world_state = {
+        "scene_summary": "",
+        "recent_party_actions": [],
+        "last_progress_events": ["ritual_stopped"],
+        "reward_history": [],
+    }
+    fake_dm.story_is_complete.return_value = True
+
+    fake_player = MagicMock()
+    fake_player.name = "Kraton"
+
+    fake_handler = MagicMock()
+
+    monkeypatch.setattr(main_module, "build_scene_memory", lambda *_args, **_kwargs: "scene")
+    monkeypatch.setattr(main_module, "detect_scene_stall", lambda *_args, **_kwargs: False)
+
+    story_complete = main_module.process_dm_turn(
+        "Look around.",
+        fake_dm,
+        {},
+        fake_player,
+        {},
+        fake_handler,
+        transcript=None,
+    )
+
+    assert story_complete is True
 
 
 @pytest.mark.ollama

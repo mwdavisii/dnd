@@ -175,3 +175,72 @@ def test_npc_turn_output_falls_back_on_outcome_label(monkeypatch, npc_db):
     # The action should be a phase-aware fallback (opening phase since no turn_context)
     assert "keep watch" not in action  # old static fallback should be gone
     assert len(action) > 10  # should be a real sentence
+
+
+def test_generate_turn_action_uses_requested_actor_type_for_validation(monkeypatch, npc_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.json.return_value = {"response": "I hesitate."}
+
+    captured = {}
+
+    def fake_validate_turn_output(*args, **kwargs):
+        captured["actor_type"] = kwargs["actor_type"]
+        return "Aria commits to the main lead."
+
+    with patch("dnd.npc.agent.requests.post", return_value=fake_response):
+        with patch("dnd.npc.agent.validate_turn_output", side_effect=fake_validate_turn_output):
+            agent.generate_turn_action([], "The doorway is dark and quiet.", actor_type="player")
+
+    assert captured["actor_type"] == "player"
+
+
+def test_npc_turn_prompt_includes_story_summary(monkeypatch, npc_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
+
+    captured = {}
+    def fake_post(_url, json=None, timeout=None):
+        captured["prompt"] = json["prompt"]
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"response": "I scout the perimeter."}
+        return response
+
+    turn_context = {
+        "actor_name": "Aria",
+        "actor_type": "companion",
+        "location": "Ashford",
+        "objective": "Investigate the mine.",
+        "story_phase": "midgame",
+        "current_round": 5,
+        "target_rounds": 15,
+        "remaining_rounds": 10,
+        "phase_goal": "Escalate.",
+        "scene_momentum": "steady",
+        "immediate_danger": "None",
+        "scene_summary": "The mine entrance is dark.",
+        "recent_party_actions": [],
+        "last_progress_events": [],
+        "resolved_events": [],
+        "notable_npcs": [],
+        "nearby_locations": [],
+        "current_beat_goal": "Enter the mine.",
+        "story_summary": "EVENTS SO FAR:\n- Party arrived at Ashford\n\nOPEN THREADS:\n- Mine entrance\n\nESCALATION LEVEL: Medium.",
+    }
+
+    with patch("dnd.npc.agent.requests.post", side_effect=fake_post):
+        agent.generate_turn_action(
+            game_context=[],
+            scene_summary="The mine entrance is dark.",
+            recent_party_actions=[],
+            turn_context=turn_context,
+        )
+
+    assert "EVENTS SO FAR" in captured["prompt"]
+    assert "Party arrived at Ashford" in captured["prompt"]

@@ -67,6 +67,7 @@ def build_turn_context(
             nearby_locations[:4],
         ),
         "current_beat_goal": _get_current_beat_goal(world_state),
+        "story_summary": str(world_state.get("story_summary", "") or ""),
     }
 
 
@@ -88,6 +89,7 @@ def format_turn_context(turn_context: dict) -> str:
             ),
             f"Phase goal: {turn_context['phase_goal']}",
             f"Current beat goal: {turn_context.get('current_beat_goal', '')}",
+            f"Story summary: {turn_context.get('story_summary', 'No summary yet.')}",
             f"Scene momentum: {turn_context['scene_momentum']}",
             f"Immediate danger: {turn_context['immediate_danger']}",
             f"Scene summary: {turn_context['scene_summary']}",

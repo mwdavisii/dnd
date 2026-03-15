@@ -86,6 +86,7 @@ class NPCAgent:
         scene_summary: str,
         recent_party_actions: list[str] | None = None,
         turn_context: dict | None = None,
+        actor_type: str = "companion",
     ) -> str:
         party_actions = recent_party_actions or []
         context_block = format_turn_context(turn_context) if turn_context else scene_summary
@@ -95,6 +96,8 @@ class NPCAgent:
             f"{self._format_memory()}\n\n"
             "Here is the current turn context:\n"
             f"{context_block}\n\n"
+            "Story so far:\n"
+            f"{self._get_story_summary(turn_context)}\n\n"
             "Recent party actions:\n"
             f"{self._format_party_actions(party_actions)}\n\n"
             "Here is the recent party history:\n"
@@ -110,7 +113,7 @@ class NPCAgent:
         )
 
         try:
-            final_response = self._try_generate_action(prompt, party_actions, turn_context)
+            final_response = self._try_generate_action(prompt, party_actions, turn_context, actor_type)
 
             # Retry once if first attempt produced a fallback
             if is_fallback_action(final_response):
@@ -120,7 +123,7 @@ class NPCAgent:
                     "You MUST describe a specific, concrete action — attack, move, speak, investigate, or defend. "
                     "Do NOT say you 'keep watch' or 'stay ready'. Act decisively."
                 )
-                retry_response = self._try_generate_action(retry_prompt, party_actions, turn_context)
+                retry_response = self._try_generate_action(retry_prompt, party_actions, turn_context, actor_type)
                 if not is_fallback_action(retry_response):
                     final_response = retry_response
 
@@ -140,6 +143,7 @@ class NPCAgent:
         prompt: str,
         party_actions: list[str],
         turn_context: dict | None,
+        actor_type: str,
     ) -> str:
         """Make a single Ollama call and validate the result. Returns the action (possibly marked as fallback)."""
         print(thinking_message(f"{self.name} is thinking"))
@@ -160,11 +164,18 @@ class NPCAgent:
         return validate_turn_output(
             payload.get("response", "").strip(),
             actor_name=self.name,
-            actor_type="companion",
+            actor_type=actor_type,
             recent_party_actions=party_actions,
             turn_context=turn_context,
-            fallback=default_fallback_action(self.name, "companion", turn_context),
+            fallback=default_fallback_action(self.name, actor_type, turn_context),
         )
+
+    def _get_story_summary(self, turn_context: dict | None = None) -> str:
+        if turn_context:
+            summary = str(turn_context.get("story_summary", "") or "").strip()
+            if summary:
+                return summary
+        return "No story summary available yet."
 
     def _format_history(self, history):
         return "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in history])
