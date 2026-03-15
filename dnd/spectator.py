@@ -294,9 +294,26 @@ def momentum_label(scene_stall_count: int) -> str:
     return "steady"
 
 
-def detect_scene_stall(previous_summary: str, new_summary: str, new_progress_events: list[str] | None = None) -> bool:
+def detect_scene_stall(
+    previous_summary: str,
+    new_summary: str,
+    new_progress_events: list[str] | None = None,
+    previous_threads: str = "",
+    current_threads: str = "",
+) -> bool:
     if new_progress_events:
         return False
+
+    # Primary signal: compare open threads from story summary
+    if previous_threads and current_threads:
+        prev_tokens = set(_normalize_for_comparison(previous_threads).split())
+        curr_tokens = set(_normalize_for_comparison(current_threads).split())
+        if prev_tokens and curr_tokens:
+            thread_overlap = len(prev_tokens & curr_tokens) / max(len(prev_tokens | curr_tokens), 1)
+            if thread_overlap >= 0.70:
+                return True
+
+    # Fallback: existing scene summary overlap check
     previous = _normalize_for_comparison(previous_summary)
     current = _normalize_for_comparison(new_summary)
     if not previous or not current:

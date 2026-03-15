@@ -219,6 +219,39 @@ def test_detect_scene_stall_flags_near_duplicate_without_progress():
     assert stalled is True
 
 
+def test_detect_scene_stall_uses_open_threads_from_summary():
+    # Scene summaries differ (below 55% overlap) but threads are identical
+    stalled = detect_scene_stall(
+        "Last turn: demand answers Consequences: The figure refuses.",
+        "Last turn: threaten the figure Consequences: They hold their ground.",
+        [],
+        previous_threads="- Cloaked figure blocking the mill entrance",
+        current_threads="- Cloaked figure blocking the mill entrance",
+    )
+    assert stalled is True
+
+
+def test_detect_scene_stall_not_stalled_when_threads_change():
+    stalled = detect_scene_stall(
+        "Last turn: demand answers Consequences: The figure refuses.",
+        "Last turn: push past the figure Consequences: You enter the mill.",
+        [],
+        previous_threads="- Cloaked figure blocking the mill entrance",
+        current_threads="- Inside the mill, bandits spotted",
+    )
+    assert stalled is False
+
+
+def test_detect_scene_stall_backward_compatible_without_threads():
+    # Existing behavior works when threads are not provided
+    stalled = detect_scene_stall(
+        "Last turn: take a cautious step forward Consequences: The shadows stir near the clearing.",
+        "Last turn: take another cautious step forward Consequences: The shadows stir near the clearing.",
+        [],
+    )
+    assert stalled is True
+
+
 def test_detect_scene_stall_allows_progress_events():
     stalled = detect_scene_stall(
         "Last turn: question Eli Consequences: He warns that the mayor was taken.",
