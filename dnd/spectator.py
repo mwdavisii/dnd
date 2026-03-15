@@ -127,6 +127,22 @@ def build_scene_memory(user_input: str, response: str) -> str:
     return f"Last turn: {user_input} Consequences: {summary}"
 
 
+def _fuzzy_duplicate(action: str, recent_actions: list[str], threshold: float = 0.50) -> bool:
+    """Return True if action shares >= threshold token overlap with any recent action."""
+    action_tokens = set(_normalize_for_comparison(action).split())
+    if not action_tokens:
+        return False
+    for recent in recent_actions:
+        recent_text = recent.split(" acted: ", 1)[-1] if " acted: " in recent else recent
+        recent_tokens = set(_normalize_for_comparison(recent_text).split())
+        if not recent_tokens:
+            continue
+        overlap = len(action_tokens & recent_tokens) / max(len(action_tokens | recent_tokens), 1)
+        if overlap >= threshold:
+            return True
+    return False
+
+
 def validate_turn_output(
     action: str,
     actor_name: str,
@@ -154,11 +170,7 @@ def validate_turn_output(
     if not cleaned or len(cleaned.split()) < 3:
         return fallback or suggest_objective_action(actor_name, actor_type, turn_context)
 
-    normalized_recent = {
-        _normalize_for_comparison(entry.split(" acted: ", 1)[-1])
-        for entry in (recent_party_actions or [])[-3:]
-    }
-    if _normalize_for_comparison(cleaned) in normalized_recent:
+    if _fuzzy_duplicate(cleaned, list(recent_party_actions or [])[-3:]):
         return fallback or suggest_objective_action(actor_name, actor_type, turn_context)
 
     if turn_context and action_abandons_objective(cleaned, turn_context):

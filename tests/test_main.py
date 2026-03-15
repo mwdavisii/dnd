@@ -209,6 +209,31 @@ def test_validate_turn_output_rejects_action_that_abandons_active_hook():
     assert "main lead" in action.lower() or "town edge" in action.lower()
 
 
+def test_validate_turn_output_rejects_fuzzy_duplicate():
+    from dnd.spectator import is_fallback_action
+
+    action = validate_turn_output(
+        "I raise my shield and stand firm, blocking the path.",
+        actor_name="Garrick",
+        actor_type="companion",
+        recent_party_actions=["Garrick acted: I raise my shield, standing firm to block the path."],
+    )
+    assert is_fallback_action(action)
+
+
+def test_validate_turn_output_allows_genuinely_different_action():
+    from dnd.spectator import is_fallback_action
+
+    action = validate_turn_output(
+        "I slip behind the figure and search for a back entrance to the mill.",
+        actor_name="Lyra",
+        actor_type="companion",
+        recent_party_actions=["Garrick acted: I raise my shield, standing firm to block the path."],
+    )
+    assert not is_fallback_action(action)
+    assert "slip behind" in action.lower()
+
+
 def test_detect_scene_stall_flags_near_duplicate_without_progress():
     stalled = detect_scene_stall(
         "Last turn: take a cautious step forward Consequences: The shadows stir near the clearing.",
