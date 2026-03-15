@@ -771,6 +771,39 @@ def test_generate_response_calls_update_story_summary(monkeypatch, dm_db, player
     assert "trail" in args[1].lower() or "ruins" in args[1].lower()  # dm_response
 
 
+def test_generate_response_includes_story_summary_in_prompt(monkeypatch, dm_db, player_sheet):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("story_summary", (
+        "EVENTS SO FAR:\n"
+        "- Party arrived in Ashford\n\n"
+        "OPEN THREADS:\n"
+        "- Sealed letter\n\n"
+        "ESCALATION LEVEL: Low tension."
+    ))
+    dm.update_world_state("target_rounds", 10)
+    dm.update_world_state("remaining_rounds", 8)
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.iter_lines.return_value = [
+        b'{"response":"The trail bends.","done":false}',
+        b'{"done":true}',
+    ]
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response) as mock_post:
+        with patch.object(dm, "_evaluate_beat"):
+            with patch.object(dm, "_update_story_summary"):
+                dm.generate_response("Look around.", player_sheet, {})
+
+    prompt = mock_post.call_args.kwargs["json"]["prompt"]
+    assert "Story so far:" in prompt
+    assert "Party arrived in Ashford" in prompt
+    assert "OPEN THREADS" in prompt
+    assert "Last turn:" in prompt
+
+
 def test_evaluate_beat_syncs_story_phase_on_llm_advance(monkeypatch, dm_db):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")

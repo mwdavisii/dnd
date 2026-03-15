@@ -293,8 +293,10 @@ class DungeonMaster:
             f"Your Companions:\n" + "\n".join(npc_summaries) + "\n\n"
             f"{self._pacing_context()}\n\n"
             f"{self._dm_scene_context(prompt)}\n\n"
-            "Recent story beats:\n"
-            f"{self._recent_history_summary()}\n\n"
+            "Story so far:\n"
+            f"{self._get_story_summary()}\n\n"
+            "Last turn:\n"
+            f"{self._recent_history_summary(max_entries=3)}\n\n"
             "Resolve only the submitted action and the world's immediate response.\n"
             "Do not add extra assistant turns, recap loops, or speculative follow-up actions by the player.\n"
             "Do not include labels such as Assistant:, User:, Outcome:, or repeated speaker prefixes.\n"
@@ -393,11 +395,18 @@ class DungeonMaster:
     def _format_history(self):
         return "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in self.history])
 
-    def _recent_history_summary(self) -> str:
+    def _get_story_summary(self) -> str:
+        """Return the rolling story summary, or a placeholder if none exists yet."""
+        summary = str(self.world_state.get("story_summary", "") or "").strip()
+        if not summary:
+            return "No story summary yet — this is the beginning of the adventure."
+        return summary
+
+    def _recent_history_summary(self, max_entries: int = 6) -> str:
         if not self.history:
             return "- No prior events recorded."
         summary_lines = []
-        for entry in self.history[-6:]:
+        for entry in self.history[-max_entries:]:
             role = entry.get("role", "assistant").title()
             content = " ".join(str(entry.get("content", "")).split())
             if len(content) > 140:
