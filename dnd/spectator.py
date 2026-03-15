@@ -102,6 +102,16 @@ def format_turn_context(turn_context: dict) -> str:
     )
 
 
+def extract_open_threads(story_summary: str) -> str:
+    """Extract the OPEN THREADS section from a rolling story summary."""
+    if not story_summary or "OPEN THREADS" not in story_summary:
+        return ""
+    match = re.search(r"OPEN THREADS:\s*\n(.*?)(?:\n\n|\nESCALATION|\Z)", story_summary, re.DOTALL)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
 def build_scene_memory(user_input: str, response: str) -> str:
     cleaned = re.sub(r"<[^>]+>", " ", response)
     cleaned = re.sub(r"\bWhat do you do next\?\b", " ", cleaned, flags=re.IGNORECASE)

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from datetime import datetime
 import pytest
-from dnd.spectator import build_turn_context, detect_scene_stall, validate_turn_output
+from dnd.spectator import build_turn_context, detect_scene_stall, extract_open_threads, validate_turn_output
 
 from main import (
     choose_save_file,
@@ -98,6 +98,29 @@ def test_create_transcript_path_uses_markdown_and_save_label():
     assert transcript_path == Path("logs/my_campaign_20260313_094500.md")
 
 
+
+
+def test_extract_open_threads_parses_summary():
+    summary = (
+        "EVENTS SO FAR:\n"
+        "- Party arrived in Ashford\n"
+        "- Met Elric at the tavern\n\n"
+        "OPEN THREADS:\n"
+        "- Missing trader last seen near old mill\n"
+        "- Hooded figure spotted at tavern\n\n"
+        "ESCALATION LEVEL: Rising tension."
+    )
+    result = extract_open_threads(summary)
+    assert "Missing trader" in result
+    assert "Hooded figure" in result
+    assert "EVENTS SO FAR" not in result
+    assert "ESCALATION LEVEL" not in result
+
+
+def test_extract_open_threads_returns_empty_on_missing_section():
+    summary = "EVENTS SO FAR:\n- Something happened\n\nESCALATION LEVEL: Low."
+    result = extract_open_threads(summary)
+    assert result == ""
 
 
 def test_build_turn_context_includes_story_summary():
