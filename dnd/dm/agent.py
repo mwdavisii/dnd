@@ -5,7 +5,7 @@ import json
 import re
 from dotenv import load_dotenv
 from collections import Counter
-from dnd.dm.prompts import ARC_GENERATION_PROMPT, BEAT_EVALUATION_PROMPT, OPENING_SCENE_PROMPT, SYSTEM_PROMPT
+from dnd.dm.prompts import ARC_GENERATION_PROMPT, BEAT_EVALUATION_PROMPT, OPENING_SCENE_PROMPT, STORY_SUMMARY_PROMPT, SYSTEM_PROMPT
 from dnd.character import CharacterSheet
 from dnd.database import load_world_state, save_world_state
 from dnd.data import _BEAT_PHASE, MONSTER_DATA
@@ -15,6 +15,7 @@ from dnd.ui import apply_base_style, highlight_quotes, style, thinking_message, 
 load_dotenv()
 
 _BEAT_DEADLINES = {"hook": 0.20, "complication": 0.50, "climax": 0.75}
+_ENDING_TYPES = {"victory", "defeat", "escape", "sacrifice"}
 
 class DungeonMaster:
     def __init__(self, session_id: int):
@@ -30,6 +31,9 @@ class DungeonMaster:
         """Updates the world state."""
         self.world_state[key] = value
         save_world_state(self.session_id, key, value)
+
+    def story_is_complete(self) -> bool:
+        return bool(self.world_state.get("story_complete", False))
 
     def add_history(self, role: str, content: str):
         """Appends an entry to the shared narrative history."""
@@ -212,6 +216,43 @@ class DungeonMaster:
         except requests.exceptions.RequestException:
             pass  # Silently skip on network error
 
+    def _update_story_summary(self, player_action: str, dm_response: str) -> None:
+        """Update the rolling story summary with the latest turn's events."""
+        previous_summary = str(self.world_state.get("story_summary", "") or "").strip()
+        if not previous_summary:
+            previous_summary = "No prior summary. This is the first update."
+
+        story_arc = self.world_state.get("story_arc") or {}
+        current_beat = str(self.world_state.get("current_beat", "hook") or "hook")
+        beat_goal = str(story_arc.get(current_beat, {}).get("goal", "") or "")
+
+        prompt = STORY_SUMMARY_PROMPT.format(
+            previous_summary=previous_summary,
+            current_beat=current_beat,
+            beat_goal=beat_goal,
+            player_action=player_action[:200],
+            dm_response=dm_response[:800],
+        )
+
+        try:
+            _t0 = time.time()
+            response = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                },
+                timeout=(5, 60),
+            )
+            response.raise_for_status()
+            print(style(f"[Summary: {time.time() - _t0:.1f}s]", "gray", dim=True))
+            raw = response.json().get("response", "").strip()
+            if raw and "EVENTS SO FAR" in raw:
+                self.update_world_state("story_summary", raw)
+        except requests.exceptions.RequestException:
+            pass  # Keep previous summary on error
+
     def _advance_beat_if_past_deadline(self) -> None:
         """Force-advance the current beat if the round has passed its hard deadline.
 
@@ -257,6 +298,7 @@ class DungeonMaster:
             "Resolve only the submitted action and the world's immediate response.\n"
             "Do not add extra assistant turns, recap loops, or speculative follow-up actions by the player.\n"
             "Do not include labels such as Assistant:, User:, Outcome:, or repeated speaker prefixes.\n"
+            "Do not contradict recent progress or resolved events already established in world state.\n"
             f"Arc directive: {self._arc_pressure_instruction()}\n"
             f"{ending_instruction}"
         )
@@ -412,6 +454,19 @@ class DungeonMaster:
         )
 
     def _extract_structured_updates(self, response: str) -> str:
+        progress_events = self._extract_tag_values(response, "progress", "id")
+        resolve_events = self._extract_tag_values(response, "resolve", "id")
+        ending_type = self._extract_ending_type(response)
+
+        self.update_world_state("last_progress_events", progress_events + resolve_events)
+        self._merge_unique_world_state_list("resolved_events", resolve_events)
+        if ending_type:
+            self._merge_unique_world_state_list("resolved_events", [f"ending_{ending_type}"])
+            self.update_world_state("story_complete", True)
+            self.update_world_state("ending_type", ending_type)
+            self.update_world_state("current_beat", "resolution")
+            self.update_world_state("story_phase", "resolution")
+
         encounter_match = re.search(r'<encounter enemies="([^"]+)"\s*/>', response)
         if encounter_match:
             enemies = []
@@ -426,6 +481,9 @@ class DungeonMaster:
         cleaned = re.sub(r'\n?\s*<encounter enemies="[^"]+"\s*/>\s*', "\n", response)
         cleaned = re.sub(r'\n?\s*<award_gold amount="[^"]+"(?: reason="[^"]*")?\s*/>\s*', "\n", cleaned)
         cleaned = re.sub(r'\n?\s*<level_up\s*/>\s*', "\n", cleaned)
+        cleaned = re.sub(r'\n?\s*<progress id="[^"]+"\s*/>\s*', "\n", cleaned)
+        cleaned = re.sub(r'\n?\s*<resolve id="[^"]+"\s*/>\s*', "\n", cleaned)
+        cleaned = re.sub(r'\n?\s*<ending type="[^"]+"\s*/>\s*', "\n", cleaned)
         return cleaned.strip()
 
     def _sanitize_dm_response(self, response: str, submitted_action: str) -> str:
@@ -444,10 +502,45 @@ class DungeonMaster:
                 "The situation shifts in response to your action, but the exact result is still unclear. "
                 "A brief opening remains in front of you. What do you do next?"
             )
-        in_resolution = self.world_state.get("story_phase") == "resolution"
+        in_resolution = self.world_state.get("story_phase") == "resolution" or self._response_declares_ending(response)
         if not in_resolution and not re.search(r"What do you do\??$", cleaned):
             cleaned = cleaned.rstrip(" .") + "\n\nWhat do you do next?"
         return cleaned
+
+    def _extract_tag_values(self, response: str, tag_name: str, attribute: str) -> list[str]:
+        pattern = re.compile(rf'<{tag_name}\s+{attribute}="([^"]+)"\s*/>')
+        values = []
+        for match in pattern.finditer(response):
+            value = self._normalize_event_id(match.group(1))
+            if value and value not in values:
+                values.append(value)
+        return values
+
+    def _extract_ending_type(self, response: str) -> str | None:
+        match = re.search(r'<ending type="([^"]+)"\s*/>', response)
+        if not match:
+            return None
+        ending_type = match.group(1).strip().lower()
+        if ending_type in _ENDING_TYPES:
+            return ending_type
+        return None
+
+    def _response_declares_ending(self, response: str) -> bool:
+        return self._extract_ending_type(response) is not None
+
+    def _normalize_event_id(self, value: str) -> str:
+        normalized = re.sub(r"[^a-z0-9_]+", "_", value.strip().lower())
+        normalized = re.sub(r"_+", "_", normalized).strip("_")
+        return normalized
+
+    def _merge_unique_world_state_list(self, key: str, new_items: list[str]) -> list[str]:
+        existing = self._world_state_list(key)
+        for item in new_items:
+            if item not in existing:
+                existing.append(item)
+        trimmed = existing[-12:]
+        self.update_world_state(key, trimmed)
+        return trimmed
 
     def _extract_pending_roll(self, response: str) -> dict | None:
         ability_map = {

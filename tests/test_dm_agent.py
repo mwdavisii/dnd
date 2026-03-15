@@ -681,6 +681,71 @@ def test_story_summary_prompt_exists():
     assert "{beat_goal}" in STORY_SUMMARY_PROMPT
 
 
+def test_update_story_summary_calls_llm_and_stores_result(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("current_beat", "hook")
+    dm.update_world_state("story_arc", {
+        "hook": {"goal": "Follow the cloaked man.", "key_npcs": [], "success_condition": "Party confronts him."},
+    })
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {
+        "response": (
+            "EVENTS SO FAR:\n"
+            "- Party arrived in Ashford and received a sealed letter\n\n"
+            "OPEN THREADS:\n"
+            "- Sealed letter contents unknown\n\n"
+            "ESCALATION LEVEL: Low tension. Party is investigating an initial lead."
+        )
+    }
+    fake_response.raise_for_status.return_value = None
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        dm._update_story_summary("Open the letter.", "You break the seal and find a warning about raiders.")
+
+    assert "Party arrived in Ashford" in dm.world_state["story_summary"]
+    assert "OPEN THREADS" in dm.world_state["story_summary"]
+
+
+def test_update_story_summary_handles_network_error(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("story_summary", "Previous summary content.")
+
+    with patch("dnd.dm.agent.requests.post", side_effect=requests.exceptions.RequestException("boom")):
+        dm._update_story_summary("Do something.", "Something happens.")
+
+    # Should keep the previous summary on error
+    assert dm.world_state["story_summary"] == "Previous summary content."
+
+
+def test_update_story_summary_seeds_initial_summary(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    # No story_summary set yet — should use "No prior summary."
+    dm.update_world_state("current_beat", "hook")
+    dm.update_world_state("story_arc", {
+        "hook": {"goal": "Investigate.", "key_npcs": [], "success_condition": "Clue found."},
+    })
+
+    captured = {}
+    def fake_post(_url, json=None, timeout=None):
+        captured["prompt"] = json["prompt"]
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"response": "EVENTS SO FAR:\n- Initial event\n\nOPEN THREADS:\n- Thread one\n\nESCALATION LEVEL: Low."}
+        return response
+
+    with patch("dnd.dm.agent.requests.post", side_effect=fake_post):
+        dm._update_story_summary("Look around.", "You see a village square.")
+
+    assert "No prior summary" in captured["prompt"]
+
+
 def test_evaluate_beat_syncs_story_phase_on_llm_advance(monkeypatch, dm_db):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")
