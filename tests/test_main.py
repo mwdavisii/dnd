@@ -13,6 +13,7 @@ from main import (
     create_transcript_path,
     derive_story_phase,
     run_initial_setup,
+    run_level_up_menu,
     should_wait_before_spectator_turn,
 
 )
@@ -411,6 +412,79 @@ def test_process_dm_turn_passes_threads_to_stall_detection(monkeypatch):
     main_module.process_dm_turn("Step aside.", fake_dm, {}, fake_player, {}, fake_handler)
 
     assert "current_threads" in captured_stall_args or "previous_threads" in captured_stall_args
+
+
+def test_run_level_up_menu_calls_level_up_with_rolled_hp(monkeypatch):
+    from unittest.mock import patch, MagicMock
+    player_sheet = MagicMock()
+    player_sheet.level = 1
+    player_sheet.hit_die_type = "d8"
+    player_sheet.ability_modifiers = {"CON": 2}
+    player_sheet.class_name = "Cleric"
+    player_sheet.spells = []
+
+    with patch("main.roll_dice", return_value=(6, "1d8 → 6")):
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        run_level_up_menu(player_sheet)
+
+    # HP = roll(6) + CON mod(2) = 8, min 1
+    player_sheet.level_up.assert_called_once_with(8)
+
+
+def test_run_level_up_menu_minimum_hp_increase_is_1(monkeypatch):
+    from unittest.mock import patch, MagicMock
+    player_sheet = MagicMock()
+    player_sheet.level = 1
+    player_sheet.hit_die_type = "d6"
+    player_sheet.ability_modifiers = {"CON": -3}
+    player_sheet.class_name = "Wizard"
+    player_sheet.spells = []
+
+    with patch("main.roll_dice", return_value=(1, "1d6 → 1")):
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        run_level_up_menu(player_sheet)
+
+    # HP = roll(1) + CON(-3) = -2, clamped to 1
+    player_sheet.level_up.assert_called_once_with(1)
+
+
+def test_run_level_up_menu_spell_selection_for_caster(monkeypatch):
+    """A caster class with learnable spells shows the selection prompt."""
+    from unittest.mock import patch, MagicMock
+    player_sheet = MagicMock()
+    player_sheet.level = 1
+    player_sheet.hit_die_type = "d8"
+    player_sheet.ability_modifiers = {"CON": 0}
+    player_sheet.class_name = "Bard"
+    # Bard starts with Cure Wounds; Thunderwave is available but not yet known
+    player_sheet.spells = [{"name": "Cure Wounds"}]
+
+    inputs = iter(["1"])  # pick first available spell
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+    with patch("main.roll_dice", return_value=(4, "1d8 → 4")):
+        run_level_up_menu(player_sheet)
+
+    player_sheet.learn_spell.assert_called_once()
+
+
+def test_run_level_up_menu_skip_spell_selection(monkeypatch):
+    """Choosing 0 skips spell learning."""
+    from unittest.mock import patch, MagicMock
+    player_sheet = MagicMock()
+    player_sheet.level = 1
+    player_sheet.hit_die_type = "d8"
+    player_sheet.ability_modifiers = {"CON": 0}
+    player_sheet.class_name = "Bard"
+    player_sheet.spells = []
+
+    inputs = iter(["0"])  # skip spell
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+    with patch("main.roll_dice", return_value=(4, "1d8 → 4")):
+        run_level_up_menu(player_sheet)
+
+    player_sheet.learn_spell.assert_not_called()
 
 
 @pytest.mark.ollama

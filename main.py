@@ -33,7 +33,7 @@ from dnd.character_creator import (
     choose_session_round_budget,
     choose_spectator_settings,
 )
-from dnd.data import STORE_INVENTORY # Import STORE_INVENTORY
+from dnd.data import MAX_LEVEL, SPELL_DATA, CLASS_DATA, STORE_INVENTORY
 from dnd.cli import CommandHandler
 from dnd.completion import enable_command_completion
 from dnd.spectator import build_scene_memory, build_turn_context, detect_scene_stall, extract_open_threads, is_fallback_action, _strip_fallback_marker
@@ -90,6 +90,40 @@ def choose_transcript_logging(save_path: str) -> "TranscriptWriter | None":
     transcript_path = create_transcript_path(save_path)
     model = os.getenv("OLLAMA_MODEL", "unknown")
     return TranscriptWriter(path=transcript_path, save_path=save_path, model=model).start()
+
+
+def run_level_up_menu(player_sheet: "CharacterSheet") -> None:
+    """Interactive level-up flow: rolls HP, optionally adds a spell."""
+    print(f"\n{section('Level Up')}")
+    new_level = player_sheet.level + 1
+    print(style(f"You advance to level {new_level}!", "green", bold=True))
+
+    # Roll HP: "1" + hit_die_type (e.g. "d8") → "1d8", then add CON modifier, minimum 1
+    con_mod = player_sheet.ability_modifiers.get("CON", 0)
+    roll_result, roll_desc = roll_dice("1" + player_sheet.hit_die_type)
+    hp_increase = max(1, roll_result + con_mod)
+    print(style(f"HP increase: {roll_desc} + CON({con_mod:+d}) = {hp_increase}", "cyan"))
+    player_sheet.level_up(hp_increase)
+
+    # Offer spell selection for spellcasting classes
+    class_info = CLASS_DATA.get(player_sheet.class_name, {})
+    available_spells = class_info.get("spells", []) + class_info.get("cantrips", [])
+    known_names = {s["name"] for s in player_sheet.spells} if player_sheet.spells else set()
+    learnable = [s for s in available_spells if s not in known_names]
+    if learnable:
+        print(style("\nAvailable spells to learn:", "silver"))
+        for i, spell_name in enumerate(learnable, 1):
+            spell = SPELL_DATA.get(spell_name, {})
+            level_label = "Cantrip" if spell.get("level", 0) == 0 else f"Level {spell.get('level', '?')}"
+            print(f"  [{i}] {spell_name} ({level_label}) — {spell.get('description', '')[:60]}")
+        print("  [0] Skip")
+        choice = input(style("Choose a spell to learn (number): ", "cyan")).strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(learnable):
+                chosen = learnable[idx]
+                player_sheet.learn_spell(chosen)
+                print(style(f"You learned {chosen}!", "green"))
 
 
 def main():
