@@ -89,12 +89,15 @@ class DungeonMaster:
             self.add_history("assistant", fallback)
             return fallback
 
-    def generate_arc(self, opening_scene: str) -> None:
+    def generate_arc(self, opening_scene: str, campaign_context: str = "") -> None:
         """Generate a 4-beat story arc from the opening scene. Skips if arc already exists (saved game)."""
         if self.world_state.get("story_arc"):
             return
 
-        prompt = ARC_GENERATION_PROMPT.format(opening_scene=opening_scene)
+        prompt = ARC_GENERATION_PROMPT.format(
+            opening_scene=opening_scene,
+            campaign_context=f"Previous quest summary:\n{campaign_context}\n\n" if campaign_context else "",
+        )
         try:
             print(thinking_message("Generating story arc"))
             _t0 = time.time()

@@ -455,6 +455,25 @@ class CharacterSheet:
         self.refresh_cache()
         print(f"[{self.name} has reached level {new_level}! Max HP is now {new_max_hp}.]")
 
+    def learn_spell(self, spell_name: str) -> None:
+        """Add a spell to this character by name. No-ops for unknown spells or duplicates."""
+        conn = get_db_connection()
+        spell_row = conn.execute("SELECT id FROM spells WHERE name = ?", (spell_name,)).fetchone()
+        if spell_row is None:
+            conn.close()
+            return
+        already_known = conn.execute(
+            "SELECT 1 FROM character_spells WHERE character_id = ? AND spell_id = ?",
+            (self._id, spell_row["id"]),
+        ).fetchone()
+        if already_known is None:
+            conn.execute(
+                "INSERT INTO character_spells (character_id, spell_id) VALUES (?, ?)",
+                (self._id, spell_row["id"]),
+            )
+            conn.commit()
+        conn.close()
+        self.refresh_cache()
 
     def add_gold(self, amount: int):
         conn = get_db_connection()

@@ -68,6 +68,7 @@ Do not output JSON. Write only the opening narration.
 """
 
 ARC_GENERATION_PROMPT = """
+{campaign_context}
 You are analyzing the opening scene of a D&D adventure to create a structured story arc.
 
 Opening scene:
@@ -151,4 +152,49 @@ Rules:
 - Keep OPEN THREADS to 5 items max
 - Total output must be under 400 words
 - Output ONLY the summary in the format above — no explanation, no commentary
+"""
+
+CAMPAIGN_SUMMARY_PROMPT = """
+You are summarizing a completed D&D adventure for the campaign record.
+
+Story summary:
+{story_summary}
+
+Resolved events:
+{resolved_events}
+
+Notable NPCs encountered:
+{notable_npcs}
+
+Story ending type: {ending_type}
+Resolution goal: {resolution_goal}
+
+Write a single prose paragraph of approximately 300 words that covers:
+- What the party set out to do and why
+- The key obstacles and turning points they faced
+- Which NPCs were important and how they featured
+- How the story ended and what was definitively resolved
+- Any threads that were left open or unresolved
+
+Write only the summary paragraph. No labels, headers, or commentary.
+"""
+
+DOWNTIME_SCENE_PROMPT = """
+You are narrating a brief downtime scene between two D&D adventures.
+
+What just happened:
+{campaign_summary}
+
+Ending type: {ending_type}
+Character name: {player_name}
+
+Write 2-3 short paragraphs narrating the recovery period between adventures:
+- Where the party rests and what the world looks like after the previous quest
+- A sense of time passing — days or weeks, not hours
+- A hint of what lies ahead without revealing the new quest
+
+Do not introduce new named characters or specific new threats.
+Do not ask what the player does next.
+Keep it under 150 words.
+Write only the narration. No labels.
 """

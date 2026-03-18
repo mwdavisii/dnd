@@ -68,6 +68,8 @@ _BEAT_PHASE = {
     "resolution": "resolution",
 }
 
+MAX_LEVEL = 20  # D&D 5e level cap
+
 RULES_REFERENCE = {
     "advantage": "Advantage means rolling two d20s and using the higher result. Disadvantage uses the lower result.",
     "saving-throws": "A saving throw is a defensive d20 roll. Roll 1d20, add the listed save modifier, and try to meet or beat the DC.",

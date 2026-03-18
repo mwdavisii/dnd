@@ -833,6 +833,42 @@ def test_no_npcs_without_seed(setup_test_db):
     assert rows == []
 
 
+def test_learn_spell_adds_spell_to_character(setup_test_db):
+    from dnd.character import CharacterSheet
+    sheet = CharacterSheet(name=setup_test_db)
+    initial_spell_count = len(sheet.spells)
+
+    sheet.learn_spell("Thunderwave")
+
+    sheet.refresh_cache()
+    spell_names = [s["name"] for s in sheet.spells]
+    assert "Thunderwave" in spell_names
+    assert len(sheet.spells) == initial_spell_count + 1
+
+
+def test_learn_spell_does_not_add_duplicate(setup_test_db):
+    from dnd.character import CharacterSheet
+    sheet = CharacterSheet(name=setup_test_db)
+    sheet.learn_spell("Thunderwave")
+    sheet.refresh_cache()
+    count_after_first = len(sheet.spells)
+
+    sheet.learn_spell("Thunderwave")
+    sheet.refresh_cache()
+    assert len(sheet.spells) == count_after_first
+
+
+def test_learn_spell_ignores_unknown_spell(setup_test_db):
+    from dnd.character import CharacterSheet
+    sheet = CharacterSheet(name=setup_test_db)
+    count = len(sheet.spells)
+
+    sheet.learn_spell("FluxCapacitor")  # not in spells table
+
+    sheet.refresh_cache()
+    assert len(sheet.spells) == count  # no change
+
+
 def test_barbarian_rage(setup_barbarian_db):
     """Tests the Barbarian's rage feature."""
     sheet = CharacterSheet(name="BarbarianTest")
