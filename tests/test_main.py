@@ -15,6 +15,7 @@ from main import (
     run_between_quest_menu,
     run_initial_setup,
     run_level_up_menu,
+    run_post_quest_flow,
     should_wait_before_spectator_turn,
 
 )
@@ -597,3 +598,58 @@ def test_run_between_quest_menu_triggers_level_up_when_eligible(monkeypatch):
         run_between_quest_menu(player_sheet, handler, level_eligible=True)
 
     player_sheet.level_up.assert_called_once_with(5)
+
+
+def test_run_post_quest_flow_orchestrates_full_transition(monkeypatch):
+    from unittest.mock import MagicMock, patch, call
+
+    dm = MagicMock()
+    dm.generate_epilogue.return_value = "The battle ends."
+    dm.generate_downtime_scene.return_value = "Weeks pass quietly."
+    dm.world_state = {
+        "campaign_history": ["The party won."],
+        "player_name": "Aldric",
+        "target_rounds": 20,
+    }
+
+    player_sheet = MagicMock()
+    player_sheet.level = 1
+    player_sheet.hit_die_type = "d8"
+    player_sheet.ability_modifiers = {"CON": 0}
+    player_sheet.class_name = "Fighter"
+    player_sheet.spells = []
+
+    handler = MagicMock()
+    handler.round_number = 25
+
+    npc1 = MagicMock()
+    npc2 = MagicMock()
+    npcs = {"aria": npc1, "bram": npc2}
+
+    monkeypatch.setattr("main.run_between_quest_menu", lambda *a, **kw: None)
+
+    run_post_quest_flow(dm, npcs, player_sheet, handler, transcript=None)
+
+    dm.generate_epilogue.assert_called_once()
+    dm.generate_campaign_summary.assert_called_once()
+    dm.generate_downtime_scene.assert_called_once()
+    dm.reset_for_new_quest.assert_called_once()
+
+    # NPC state cleared
+    assert npc1.history == []
+    assert npc1.recent_actions == []
+    assert npc2.history == []
+    assert npc2.recent_actions == []
+
+    # handler round reset to 1
+    assert handler.round_number == 1
+
+    # New arc generated with correct campaign_context
+    expected_context = "The party won."
+    dm.generate_opening_scene.assert_called_once_with(
+        player_sheet, npcs, campaign_context=expected_context
+    )
+    dm.generate_arc.assert_called_once_with(
+        dm.generate_opening_scene.return_value,
+        campaign_context=expected_context,
+    )

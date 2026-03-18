@@ -161,6 +161,58 @@ def run_between_quest_menu(
     input(style("\nPress Enter to begin your next quest...", "gold", bold=True) + prompt_marker())
 
 
+def run_post_quest_flow(
+    dm: "DungeonMaster",
+    npcs: dict,
+    player_sheet: "CharacterSheet",
+    handler: "CommandHandler",
+    transcript=None,
+) -> None:
+    """
+    Full post-quest transition: epilogue → campaign summary → downtime →
+    between-quest menu → reset → new opening + arc.
+    Called when story_complete fires OR round limit is reached.
+    """
+    # 1. Epilogue
+    print(f"\n{speaker('DM', 'gold')} ", end="")
+    epilogue = dm.generate_epilogue()
+    print(apply_base_style(highlight_quotes(wrap_text(epilogue)), "parchment"))
+    if transcript:
+        transcript.write_dm_response(epilogue, 0)
+
+    # 2. Campaign summary (persists to DB via update_world_state)
+    dm.generate_campaign_summary()
+
+    # 3. Downtime narration
+    downtime = dm.generate_downtime_scene()
+    print(f"\n{style('— Downtime —', 'silver', italic=True)}")
+    print(apply_base_style(highlight_quotes(wrap_text(downtime)), "parchment"))
+    if transcript:
+        transcript.write_dm_response(downtime, 0)
+
+    # 4. Between-quest menu
+    level_eligible = player_sheet.level < MAX_LEVEL
+    run_between_quest_menu(player_sheet, handler, level_eligible=level_eligible)
+
+    # 5. Reset world state and clear NPC in-memory state
+    dm.reset_for_new_quest()
+    for npc in npcs.values():
+        npc.history = []
+        npc.recent_actions = []
+    handler.round_number = 1
+
+    # 6. Generate new opening and arc with campaign context
+    campaign_history = list(dm.world_state.get("campaign_history", []) or [])
+    campaign_context = campaign_history[-1] if campaign_history else ""
+    opening_scene = dm.generate_opening_scene(player_sheet, npcs, campaign_context=campaign_context)
+    dm.generate_arc(opening_scene, campaign_context=campaign_context)
+    if transcript:
+        transcript.write_opening_scene(opening_scene, elapsed=0)
+    print(apply_base_style(highlight_quotes(wrap_text(opening_scene)), "parchment"))
+    handler.print_turn_status()
+    handler.print_suggested_actions()
+
+
 def main():
     """Main function to run the D&D game."""
     
@@ -283,13 +335,8 @@ def main():
             try:
                 if spectator_mode:
                     if handler.round_number > target_rounds:
-                        print(f"\n{speaker('DM', 'gold')} ", end="")
-                        epilogue = dm.generate_epilogue()
-                        print(apply_base_style(highlight_quotes(wrap_text(epilogue)), "parchment"))
-                        if transcript:
-                            transcript.write_dm_response(epilogue, 0)
-                        print(style("\nThe adventure concludes.", "silver", dim=True, italic=True))
-                        break
+                        run_post_quest_flow(dm, npcs, player_sheet, handler, transcript=transcript)
+                        continue
                     actor = handler.current_turn_actor
                     should_pause = should_wait_before_spectator_turn(actor["type"])
                     if spectator_pause_seconds == 0 and should_pause:
@@ -308,8 +355,8 @@ def main():
                     if action:
                         story_complete = process_dm_turn(action, dm, npcs, player_sheet, character_sheets, handler, transcript=transcript)
                         if story_complete:
-                            print(style("\nThe adventure concludes.", "silver", dim=True, italic=True))
-                            break
+                            run_post_quest_flow(dm, npcs, player_sheet, handler, transcript=transcript)
+                            continue
                     continue
 
                 user_input = input(f"\n{prompt_marker()}")
@@ -328,8 +375,8 @@ def main():
 
                 story_complete = process_dm_turn(user_input, dm, npcs, player_sheet, character_sheets, handler, transcript=transcript)
                 if story_complete:
-                    print(style("\nThe adventure concludes.", "silver", dim=True, italic=True))
-                    break
+                    run_post_quest_flow(dm, npcs, player_sheet, handler, transcript=transcript)
+                    continue
 
 
             except (KeyboardInterrupt, EOFError):
