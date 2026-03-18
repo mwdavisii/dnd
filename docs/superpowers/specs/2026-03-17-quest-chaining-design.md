@@ -79,7 +79,7 @@ A sequential guided flow, not a free-form command loop:
 
 1. Print "Time passes. Before your next adventure..." header
 2. **Level Up:** If `player_sheet.level < MAX_LEVEL` (constant = 20, added to `dnd/data.py`), invoke `run_level_up_menu()` (new helper, see below)
-3. **Rest:** Prompt "Do you want to take a long rest? (y/n)". If yes, call `handler.handle("/longrest")`
+3. **Rest:** Prompt "Do you want to take a long rest? (y/n)". If yes, call `player_sheet.take_long_rest()` directly — do not route through `handler.handle("/longrest")` since that command is gated behind `_player_can_act()`, which was designed for in-combat use and may not behave reliably in between-quest context
 4. **Shop:** Prompt "Do you want to visit the shop? (y/n)". If yes, print shop inventory via `handler.handle("/shop")`, then enter a buy loop: accept `/buy <item>` commands until the player enters an empty line or `done`
 5. Print "Press Enter to begin your next quest." and wait for input
 
@@ -89,7 +89,7 @@ No `/levelup` command exists today — `CharacterSheet.level_up(new_max_hp_incre
 - Determine eligible ability score improvements and new spells based on class and new level (using `CLASS_DATA` from `dnd/data.py`)
 - Prompt player to choose ability score improvement or feat (if applicable)
 - Prompt player to choose new spells from class spell list (if applicable)
-- Roll HP: use `player_sheet.hit_die_type` (e.g. `d12` for Barbarian) + player's CON modifier (minimum 1), pass result as `new_max_hp_increase` to `player_sheet.level_up()`
+- Roll HP: call `roll_dice("1" + player_sheet.hit_die_type)` (matching the pattern in `take_short_rest()`; `hit_die_type` stores `d12` not `1d12`) + player's CON modifier (minimum 1), pass result as `new_max_hp_increase` to `player_sheet.level_up()`
 - Print confirmation
 
 Level cap is 20 (D&D 5e standard). A `MAX_LEVEL = 20` constant will be added to `dnd/data.py`.
@@ -111,6 +111,7 @@ Resets operational state, preserves continuity. Also clears `self.history` (the 
 | `scene_stall_count`, `recent_party_actions` | NPC memories (in DB, untouched) |
 | `self.history` (DM conversation list) | |
 | each `NPCAgent.history` (via main.py) | |
+| each `NPCAgent.recent_actions` (via main.py) | |
 
 ---
 
@@ -120,7 +121,7 @@ Resets operational state, preserves continuity. Also clears `self.history` (the 
 
 Both receive an optional `campaign_context: str` parameter (defaults to `""`). When present, the context is injected as "Previous quest summary: ..." — but the injection method differs per function due to their different prompt-building patterns:
 
-- **`generate_arc()`** uses `ARC_GENERATION_PROMPT.format(...)`. A new `{campaign_context}` format slot is added at the top of `ARC_GENERATION_PROMPT`. The slot renders as an empty string on the first quest.
+- **`generate_arc()`** uses `ARC_GENERATION_PROMPT.format(...)`. A new `{campaign_context}` format slot is added at the top of `ARC_GENERATION_PROMPT`. The call site must pass both keyword arguments: `ARC_GENERATION_PROMPT.format(opening_scene=opening_scene, campaign_context=campaign_context)` — omitting `campaign_context` will raise a `KeyError` even when it defaults to `""`.
 - **`generate_opening_scene()`** builds `full_prompt` by string concatenation. The campaign context block is prepended to `full_prompt` before `OPENING_SCENE_PROMPT` when non-empty.
 
 When absent (first quest), behavior is identical to today in both cases.
@@ -145,7 +146,20 @@ No change to the prompt template itself. The campaign context is injected via st
 
 ### Quest completion trigger in `main.py`
 
-Currently epilogue only fires when `current_round > target_rounds`. Add a second trigger: when `dm.story_is_complete()` returns `True` mid-game (ending tag fired before round limit). Both paths converge into the same post-quest flow.
+Currently the spectator loop calls `generate_epilogue()` only when `handler.round_number > target_rounds`. The `story_is_complete()` mid-game path currently just prints "The adventure concludes." and breaks — it never calls `generate_epilogue()`.
+
+Both paths must be consolidated into a single `run_post_quest_flow()` helper in `main.py` that:
+1. Calls `dm.generate_epilogue()` and prints it
+2. Calls `dm.generate_campaign_summary()`
+3. Calls `dm.generate_downtime_scene()` and prints it
+4. Calls `run_between_quest_menu()`
+5. Calls `dm.reset_for_new_quest()` + clears `npc.history` and `npc.recent_actions` for each NPC
+6. Calls `dm.generate_opening_scene()` + `dm.generate_arc()` with campaign context
+7. Resumes the main loop
+
+The two trigger points that call `run_post_quest_flow()`:
+- When `handler.round_number > target_rounds` in the spectator loop
+- When `dm.story_is_complete()` returns `True` after `process_dm_turn()`
 
 ---
 
