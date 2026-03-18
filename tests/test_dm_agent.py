@@ -1086,3 +1086,69 @@ def test_generate_arc_without_campaign_context_omits_context(monkeypatch, dm_db)
 
     call_kwargs = mock_post.call_args.kwargs["json"]
     assert "Previous quest summary" not in call_kwargs["prompt"]
+
+
+def test_generate_downtime_scene_returns_narration(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.world_state.update({
+        "campaign_history": ["The party defeated the goblin king and secured the village."],
+        "ending_type": "victory",
+        "player_name": "Aldric",
+    })
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "Days pass. The village slowly recovers."}
+    fake_response.raise_for_status.return_value = None
+
+    with patch('dnd.dm.agent.requests.post', return_value=fake_response):
+        result = dm.generate_downtime_scene()
+
+    assert "Days pass" in result
+
+
+def test_generate_downtime_scene_falls_back_on_error(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.world_state["campaign_history"] = ["A quest was completed."]
+
+    with patch('dnd.dm.agent.requests.post', side_effect=requests.exceptions.RequestException("boom")):
+        result = dm.generate_downtime_scene()
+
+    assert len(result) > 0
+
+
+def test_generate_opening_scene_with_campaign_context(monkeypatch, dm_db, player_sheet):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "You find yourself in the haunted forest. What do you do?"}
+    fake_response.raise_for_status.return_value = None
+
+    with patch('dnd.dm.agent.requests.post', return_value=fake_response) as mock_post:
+        opening = dm.generate_opening_scene(player_sheet, {}, campaign_context="Goblins were defeated last time.")
+
+    call_kwargs = mock_post.call_args.kwargs["json"]
+    assert "Goblins were defeated last time" in call_kwargs["prompt"]
+    assert "What do you do?" in opening
+
+
+def test_generate_opening_scene_without_campaign_context_unchanged(monkeypatch, dm_db, player_sheet):
+    """First quest: campaign_context omitted — prompt must NOT mention previous quest."""
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "You stand in the market. What do you do?"}
+    fake_response.raise_for_status.return_value = None
+
+    with patch('dnd.dm.agent.requests.post', return_value=fake_response) as mock_post:
+        dm.generate_opening_scene(player_sheet, {})
+
+    call_kwargs = mock_post.call_args.kwargs["json"]
+    assert "Previous quest summary" not in call_kwargs["prompt"]

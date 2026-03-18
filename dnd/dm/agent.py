@@ -39,7 +39,7 @@ class DungeonMaster:
         """Appends an entry to the shared narrative history."""
         self.history.append({"role": role, "content": content})
 
-    def generate_opening_scene(self, player_sheet: CharacterSheet, npcs: dict) -> str:
+    def generate_opening_scene(self, player_sheet: CharacterSheet, npcs: dict, campaign_context: str = "") -> str:
         existing_opening = self.world_state.get("opening_scene")
         if existing_opening:
             if not self.history:
@@ -50,7 +50,9 @@ class DungeonMaster:
         for npc in npcs.values():
             npc_summaries.append(f"- {npc.name} the {npc.class_name}")
 
+        campaign_block = f"Previous quest summary:\n{campaign_context}\n\n" if campaign_context else ""
         full_prompt = (
+            f"{campaign_block}"
             f"{player_sheet.get_prompt_summary()}\n\n"
             f"Companions:\n" + "\n".join(npc_summaries) + "\n\n"
             f"{self._pacing_context()}\n\n"
@@ -484,6 +486,42 @@ class DungeonMaster:
         history = list(self.world_state.get("campaign_history", []) or [])
         history.append(summary)
         self.update_world_state("campaign_history", history)
+
+    def generate_downtime_scene(self) -> str:
+        """Generate a 2-3 paragraph narration bridging the completed quest and the next adventure."""
+        from dnd.dm.prompts import DOWNTIME_SCENE_PROMPT
+
+        history = list(self.world_state.get("campaign_history", []) or [])
+        campaign_summary = history[-1] if history else "The party completed their previous adventure."
+        ending_type = str(self.world_state.get("ending_type", "victory") or "victory")
+        player_name = str(self.world_state.get("player_name", "the party") or "the party")
+
+        prompt = DOWNTIME_SCENE_PROMPT.format(
+            campaign_summary=campaign_summary,
+            ending_type=ending_type,
+            player_name=player_name,
+        )
+
+        try:
+            print(thinking_message("Narrating downtime"))
+            _t0 = time.time()
+            response = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                },
+                timeout=(5, 60),
+            )
+            response.raise_for_status()
+            print(style(f"[Downtime: {time.time() - _t0:.1f}s]", "gray", dim=True))
+            narration = response.json().get("response", "").strip()
+            if not narration:
+                raise ValueError("Empty downtime response")
+            return narration
+        except (requests.exceptions.RequestException, ValueError):
+            return "The party rests and recovers before the next adventure."
 
     def _format_history(self):
         return "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in self.history])
