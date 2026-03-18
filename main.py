@@ -126,6 +126,39 @@ def run_level_up_menu(player_sheet: "CharacterSheet") -> None:
                 print(style(f"You learned {chosen}!", "green"))
 
 
+def run_between_quest_menu(
+    player_sheet: "CharacterSheet",
+    handler: "CommandHandler",
+    level_eligible: bool = True,
+) -> None:
+    """Guided between-quest menu: level up → rest → shop."""
+    print(f"\n{section('Between Quests')}")
+    print(style("Time passes. Before your next adventure...", "silver", italic=True))
+
+    # Level Up
+    if level_eligible:
+        run_level_up_menu(player_sheet)
+
+    # Rest
+    rest_choice = input(style("\nDo you want to take a long rest? [y/N] ", "cyan") + prompt_marker()).strip().lower()
+    if rest_choice in {"y", "yes"}:
+        player_sheet.take_long_rest()
+
+    # Shop
+    shop_choice = input(style("\nDo you want to visit the shop? [y/N] ", "cyan") + prompt_marker()).strip().lower()
+    if shop_choice in {"y", "yes"}:
+        handler.handle("/shop")
+        print(style("Enter /buy <item> to purchase, or press Enter to leave.", "silver", dim=True, italic=True))
+        while True:
+            buy_input = input(f"\n{prompt_marker()}").strip()
+            if not buy_input or buy_input.lower() in {"done", "exit", "leave"}:
+                break
+            if buy_input.startswith("/buy"):
+                handler.handle(buy_input)
+
+    input(style("\nPress Enter to begin your next quest...", "gold", bold=True) + prompt_marker())
+
+
 def main():
     """Main function to run the D&D game."""
     

@@ -12,6 +12,7 @@ from main import (
     choose_save_file,
     create_transcript_path,
     derive_story_phase,
+    run_between_quest_menu,
     run_initial_setup,
     run_level_up_menu,
     should_wait_before_spectator_turn,
@@ -545,3 +546,54 @@ def test_main_executes_short_spectator_game_with_two_npcs(tmp_path):
 
     assert player_count == 1
     assert npc_count == 2
+
+
+def test_run_between_quest_menu_rest_yes(monkeypatch):
+    from unittest.mock import MagicMock
+    player_sheet = MagicMock()
+    player_sheet.spells = []
+    handler = MagicMock()
+
+    inputs = iter(["y", "n", ""])  # rest=yes, shop=no, press enter
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+    run_between_quest_menu(player_sheet, handler, level_eligible=False)
+
+    player_sheet.take_long_rest.assert_called_once()
+    handler.handle.assert_not_called()
+
+
+def test_run_between_quest_menu_shop_buy_loop(monkeypatch):
+    from unittest.mock import MagicMock
+    player_sheet = MagicMock()
+    player_sheet.spells = []
+    handler = MagicMock()
+    handler.handle.return_value = (True, "")
+
+    inputs = iter(["n", "y", "/buy Healing Potion", "done", ""])
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+    run_between_quest_menu(player_sheet, handler, level_eligible=False)
+
+    player_sheet.take_long_rest.assert_not_called()
+    handler.handle.assert_any_call("/shop")
+    handler.handle.assert_any_call("/buy Healing Potion")
+
+
+def test_run_between_quest_menu_triggers_level_up_when_eligible(monkeypatch):
+    from unittest.mock import patch, MagicMock
+    player_sheet = MagicMock()
+    player_sheet.level = 1
+    player_sheet.hit_die_type = "d8"
+    player_sheet.ability_modifiers = {"CON": 0}
+    player_sheet.class_name = "Fighter"
+    player_sheet.spells = []
+    handler = MagicMock()
+
+    inputs = iter(["n", "n", ""])  # no rest, no shop, press enter
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+    with patch("main.roll_dice", return_value=(5, "1d8 → 5")):
+        run_between_quest_menu(player_sheet, handler, level_eligible=True)
+
+    player_sheet.level_up.assert_called_once_with(5)
