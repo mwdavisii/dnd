@@ -724,6 +724,27 @@ def test_update_story_summary_handles_network_error(monkeypatch, dm_db):
     assert dm.world_state["story_summary"] == "Previous summary content."
 
 
+def test_update_story_summary_rejects_garbled_output(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.update_world_state("story_summary", "Previous valid summary.")
+    dm.update_world_state("current_beat", "hook")
+    dm.update_world_state("story_arc", {
+        "hook": {"goal": "Investigate.", "key_npcs": [], "success_condition": "Clue found."},
+    })
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "EVENTS SO FAR:\n- Something happened\n\nThis is garbled output without the required sections."}
+    fake_response.raise_for_status.return_value = None
+
+    with patch("dnd.dm.agent.requests.post", return_value=fake_response):
+        dm._update_story_summary("Look around.", "You see a village.")
+
+    # Should keep previous summary because "OPEN THREADS" is missing
+    assert dm.world_state["story_summary"] == "Previous valid summary."
+
+
 def test_update_story_summary_seeds_initial_summary(monkeypatch, dm_db):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")

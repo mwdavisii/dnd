@@ -248,7 +248,7 @@ class DungeonMaster:
             response.raise_for_status()
             print(style(f"[Summary: {time.time() - _t0:.1f}s]", "gray", dim=True))
             raw = response.json().get("response", "").strip()
-            if raw and "EVENTS SO FAR" in raw:
+            if raw and "EVENTS SO FAR" in raw and "OPEN THREADS" in raw:
                 self.update_world_state("story_summary", raw)
         except requests.exceptions.RequestException:
             pass  # Keep previous summary on error
@@ -332,6 +332,9 @@ class DungeonMaster:
 
             final_response = "".join(full_response)
             print(style(f"[DM: {time.time() - _t0:.1f}s]", "gray", dim=True))
+            # Order matters: _sanitize_dm_response checks for ending tags (e.g. <ending type="victory" />)
+            # to decide whether to append "What do you do next?". _extract_structured_updates then
+            # strips those tags from the cleaned text. Reversing the order would break ending detection.
             cleaned_response = self._sanitize_dm_response(final_response, prompt)
             cleaned_response = self._extract_structured_updates(cleaned_response)
             self._evaluate_beat(cleaned_response)
@@ -348,7 +351,8 @@ class DungeonMaster:
 
     def generate_epilogue(self) -> str:
         """Generate a dedicated conclusion scene that wraps up the story."""
-        recent_story = self._recent_history_summary()
+        story_summary = self._get_story_summary()
+        recent_story = self._recent_history_summary(max_entries=3)
         objective = str(self.world_state.get("objective", "") or "")
         story_arc = self.world_state.get("story_arc") or {}
         resolution_goal = str(story_arc.get("resolution", {}).get("goal", "") or "")
@@ -357,14 +361,18 @@ class DungeonMaster:
             "You are narrating the final scene of a short D&D adventure.\n\n"
             f"The party's objective was: {objective}\n"
             f"The resolution goal is: {resolution_goal}\n\n"
-            "Recent events:\n"
+            "Full story so far:\n"
+            f"{story_summary}\n\n"
+            "Most recent events:\n"
             f"{recent_story}\n\n"
             "Write a 2-3 paragraph CONCLUSION that:\n"
-            "1. Resolves the central conflict decisively (victory, defeat, escape, or sacrifice)\n"
-            "2. Shows what happens to the main characters afterward\n"
-            "3. Ends with a final closing sentence — do NOT ask what the player does next\n"
-            "4. Do NOT introduce new threats, mysteries, cliffhangers, or dice rolls\n"
-            "5. Keep it under 200 words\n\n"
+            "1. Resolves the central conflict based on what ACTUALLY happened in the story above\n"
+            "2. References specific characters, places, and events from the story — do NOT invent new ones\n"
+            "3. Shows what happens to the main characters afterward\n"
+            "4. Ends with a final closing sentence — do NOT ask what the player does next\n"
+            "5. Do NOT introduce new threats, mysteries, cliffhangers, or dice rolls\n"
+            "6. Do NOT contradict events that already happened\n"
+            "7. Keep it under 200 words\n\n"
             "Write only the conclusion narration. No labels, no meta-commentary."
         )
 

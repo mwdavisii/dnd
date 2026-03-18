@@ -176,8 +176,6 @@ def validate_turn_output(
     if turn_context and action_abandons_objective(cleaned, turn_context):
         return fallback or suggest_objective_action(actor_name, actor_type, turn_context)
 
-    if len(cleaned) > 180:
-        cleaned = cleaned[:177].rstrip() + "..."
     return cleaned
 
 
