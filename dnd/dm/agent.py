@@ -161,6 +161,33 @@ class DungeonMaster:
         self.update_world_state("story_arc", fallback)
         self.update_world_state("current_beat", "hook")
 
+    def reset_for_new_quest(self) -> None:
+        """Reset operational world state for a new quest. Carry-forward keys are preserved."""
+        keys_to_reset = [
+            "story_arc", "current_beat", "story_phase",
+            "current_round", "remaining_rounds",
+            "story_summary", "scene_summary",
+            "story_complete", "ending_type",
+            "opening_scene", "objective", "location",
+            "pending_encounter_enemies", "pending_roll",
+            "scene_stall_count", "recent_party_actions",
+            "previous_open_threads", "last_progress_events",
+            "reward_history", "story_hook",
+        ]
+        for key in keys_to_reset:
+            self.update_world_state(key, None)
+
+        # Cap notable_npcs at 6 — they carry forward as potential recurring characters
+        npcs = self._world_state_list("notable_npcs")[:6]
+        self.update_world_state("notable_npcs", npcs)
+
+        # Cap resolved_events at 12 — they carry forward as historical record
+        events = self._world_state_list("resolved_events")[-12:]
+        self.update_world_state("resolved_events", events)
+
+        # Clear in-memory history — campaign_summary preserves narrative continuity
+        self.history = []
+
     def _beat_past_deadline(self, current_beat: str) -> bool:
         """Return True if the current round has passed the beat's hard deadline."""
         current_round = int(self.world_state.get("current_round", 1) or 1)

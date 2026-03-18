@@ -879,6 +879,73 @@ def test_story_summary_accumulates_across_rounds(monkeypatch, dm_db, player_shee
         assert "Rising tension" in dm.world_state.get("story_summary", "")
 
 
+def test_reset_for_new_quest_clears_operational_state(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    # Populate operational keys
+    dm.world_state.update({
+        "story_arc": {"hook": {"goal": "Fight goblins"}},
+        "current_beat": "climax",
+        "story_phase": "climax",
+        "current_round": 15,
+        "remaining_rounds": 5,
+        "story_summary": "EVENTS SO FAR:\n- Goblins attacked.",
+        "scene_summary": "You stand in the goblin den.",
+        "story_complete": True,
+        "ending_type": "victory",
+        "opening_scene": "You arrive at the gate.",
+        "objective": "Defeat the goblin king",
+        "location": "Goblin Den",
+        "pending_encounter_enemies": ["Goblin"],
+        "pending_roll": {"type": "save", "ability": "DEX"},
+        "scene_stall_count": 3,
+        "recent_party_actions": ["attacked", "fled"],
+        "previous_open_threads": "- The cultist escaped.",
+        "last_progress_events": ["found_key"],
+        "reward_history": ["level:found_key"],
+        "story_hook": "A dark conspiracy.",
+    })
+    # Populate carry-forward keys
+    dm.world_state.update({
+        "notable_npcs": ["Aria", "Bram", "Captain Voss", "Elder Mira", "Guard Tom", "Spy Lena", "Extra NPC"],
+        "nearby_locations": ["Tavern", "Keep"],
+        "resolved_events": [f"event_{i}" for i in range(20)],  # 20 events — should be capped to 12
+        "campaign_history": ["Quest 1 summary text."],
+        "target_rounds": 20,
+        "player_name": "Aldric",
+    })
+    dm.history = [{"role": "user", "content": "I attack"}, {"role": "assistant", "content": "You hit!"}]
+
+    dm.reset_for_new_quest()
+
+    # Operational keys cleared (None or absent — .get() returns None either way)
+    for key in [
+        "story_arc", "current_beat", "story_phase", "current_round", "remaining_rounds",
+        "story_summary", "scene_summary", "story_complete", "ending_type",
+        "opening_scene", "objective", "location", "pending_encounter_enemies", "pending_roll",
+        "scene_stall_count", "recent_party_actions", "previous_open_threads",
+        "last_progress_events", "reward_history", "story_hook",
+    ]:
+        assert dm.world_state.get(key) is None, f"Expected {key!r} to be cleared"
+
+    # history cleared
+    assert dm.history == []
+
+    # Carry-forward keys preserved
+    assert dm.world_state["target_rounds"] == 20
+    assert dm.world_state["player_name"] == "Aldric"
+    assert dm.world_state["campaign_history"] == ["Quest 1 summary text."]
+    assert dm.world_state["nearby_locations"] == ["Tavern", "Keep"]
+
+    # resolved_events capped at 12
+    assert len(dm.world_state["resolved_events"]) == 12
+
+    # notable_npcs capped at 6
+    assert len(dm.world_state["notable_npcs"]) == 6
+
+
 def test_evaluate_beat_syncs_story_phase_on_llm_advance(monkeypatch, dm_db):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")
