@@ -155,6 +155,8 @@ def run_between_quest_menu(
                 break
             if buy_input.startswith("/buy"):
                 handler.handle(buy_input)
+            else:
+                print(style("Use /buy <item name> to purchase.", "red"))
 
     input(style("\nPress Enter to begin your next quest...", "gold", bold=True) + prompt_marker())
 
