@@ -969,3 +969,120 @@ def test_evaluate_beat_syncs_story_phase_on_llm_advance(monkeypatch, dm_db):
 
     assert dm.world_state["current_beat"] == "complication"
     assert dm.world_state["story_phase"] == "midgame"
+
+
+def test_generate_campaign_summary_appends_to_history(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.world_state.update({
+        "story_summary": "EVENTS SO FAR:\n- Party defeated goblins.\nOPEN THREADS:\n- None\nESCALATION LEVEL: Low",
+        "resolved_events": ["defeated_goblins"],
+        "notable_npcs": ["Aria"],
+        "ending_type": "victory",
+        "story_arc": {"resolution": {"goal": "Defeat the goblin king"}},
+    })
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "The party ventured into the goblin den and triumphed."}
+    fake_response.raise_for_status.return_value = None
+
+    with patch('dnd.dm.agent.requests.post', return_value=fake_response):
+        dm.generate_campaign_summary()
+
+    assert dm.world_state["campaign_history"] == ["The party ventured into the goblin den and triumphed."]
+
+
+def test_generate_campaign_summary_appends_to_existing_history(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.world_state["campaign_history"] = ["Quest 1 summary."]
+    dm.world_state["story_summary"] = "EVENTS SO FAR:\n- Quest 2 events.\nOPEN THREADS:\n- None\nESCALATION LEVEL: Medium"
+    dm.world_state["story_arc"] = {"resolution": {"goal": "Complete quest 2"}}
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": "Quest 2 summary prose."}
+    fake_response.raise_for_status.return_value = None
+
+    with patch('dnd.dm.agent.requests.post', return_value=fake_response):
+        dm.generate_campaign_summary()
+
+    assert len(dm.world_state["campaign_history"]) == 2
+    assert dm.world_state["campaign_history"][0] == "Quest 1 summary."
+    assert dm.world_state["campaign_history"][1] == "Quest 2 summary prose."
+
+
+def test_generate_campaign_summary_falls_back_on_error(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+    dm.world_state["story_summary"] = (
+        "EVENTS SO FAR:\n- Party defeated goblins.\n"
+        "OPEN THREADS:\n- None\nESCALATION LEVEL: Low"
+    )
+
+    with patch('dnd.dm.agent.requests.post', side_effect=requests.exceptions.RequestException("boom")):
+        dm.generate_campaign_summary()
+
+    history = dm.world_state.get("campaign_history", [])
+    assert len(history) == 1
+    assert "Party defeated goblins" in history[0]
+
+
+def test_generate_arc_with_campaign_context_passes_context(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    arc_json = json.dumps({
+        "objective": "Find the missing scout",
+        "story_hook": "A dark conspiracy",
+        "notable_npcs": ["Ranger Kael"],
+        "nearby_locations": ["Watchtower"],
+        "arc": {
+            "hook": {"goal": "Search the forest", "key_npcs": [], "success_condition": "Scout found"},
+            "complication": {"goal": "Face the ambush", "key_npcs": [], "success_condition": "Survive"},
+            "climax": {"goal": "Confront the conspirators", "key_npcs": [], "success_condition": "Conspirators defeated"},
+            "resolution": {"goal": "Return to town", "key_npcs": [], "success_condition": "Town is safe"},
+        }
+    })
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": arc_json}
+    fake_response.raise_for_status.return_value = None
+
+    with patch('dnd.dm.agent.requests.post', return_value=fake_response) as mock_post:
+        dm.generate_arc("You arrive at the forest edge.", campaign_context="Previous quest summary: goblins were defeated.")
+
+    call_kwargs = mock_post.call_args.kwargs["json"]
+    assert "Previous quest summary: goblins were defeated" in call_kwargs["prompt"]
+    assert dm.world_state["story_arc"] is not None
+
+
+def test_generate_arc_without_campaign_context_omits_context(monkeypatch, dm_db):
+    """First quest: no campaign_context — prompt must NOT mention previous quest."""
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    dm = DungeonMaster(session_id=dm_db)
+
+    arc_json = json.dumps({
+        "objective": "Investigate the village",
+        "story_hook": "A mystery",
+        "notable_npcs": [],
+        "nearby_locations": [],
+        "arc": {
+            "hook": {"goal": "Investigate", "key_npcs": [], "success_condition": "Clue found"},
+            "complication": {"goal": "Face danger", "key_npcs": [], "success_condition": "Danger overcome"},
+            "climax": {"goal": "Confront evil", "key_npcs": [], "success_condition": "Evil defeated"},
+            "resolution": {"goal": "Restore peace", "key_npcs": [], "success_condition": "Peace restored"},
+        }
+    })
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"response": arc_json}
+    fake_response.raise_for_status.return_value = None
+
+    with patch('dnd.dm.agent.requests.post', return_value=fake_response) as mock_post:
+        dm.generate_arc("You stand in the village square.")
+
+    call_kwargs = mock_post.call_args.kwargs["json"]
+    assert "Previous quest summary" not in call_kwargs["prompt"]

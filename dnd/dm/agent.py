@@ -430,6 +430,61 @@ class DungeonMaster:
             print(f"Error generating epilogue: {e}")
             return "The adventure draws to a close. The party stands together, battered but unbroken, as the dust settles on what has been a harrowing journey."
 
+    def generate_campaign_summary(self) -> None:
+        """Compress the completed quest into a ~300-word summary appended to campaign_history."""
+        from dnd.dm.prompts import CAMPAIGN_SUMMARY_PROMPT
+
+        story_summary = self._get_story_summary()
+        resolved_events = ", ".join(self._world_state_list("resolved_events")) or "None recorded"
+        notable_npcs = ", ".join(self._world_state_list("notable_npcs")) or "None recorded"
+        ending_type = str(self.world_state.get("ending_type", "unknown") or "unknown")
+        story_arc = self.world_state.get("story_arc") or {}
+        resolution_goal = str(story_arc.get("resolution", {}).get("goal", "") or "")
+
+        prompt = CAMPAIGN_SUMMARY_PROMPT.format(
+            story_summary=story_summary,
+            resolved_events=resolved_events,
+            notable_npcs=notable_npcs,
+            ending_type=ending_type,
+            resolution_goal=resolution_goal,
+        )
+
+        try:
+            print(thinking_message("Writing campaign summary"))
+            _t0 = time.time()
+            response = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                },
+                timeout=(5, 60),
+            )
+            response.raise_for_status()
+            print(style(f"[Campaign: {time.time() - _t0:.1f}s]", "gray", dim=True))
+            summary = response.json().get("response", "").strip()
+            if not summary:
+                raise ValueError("Empty campaign summary response")
+        except (requests.exceptions.RequestException, ValueError):
+            # Fallback: extract the EVENTS SO FAR block from story_summary as plain text
+            lines = story_summary.split("\n")
+            events = []
+            capturing = False
+            for line in lines:
+                if line.startswith("EVENTS SO FAR"):
+                    capturing = True
+                    continue
+                if capturing and line.startswith("OPEN THREADS"):
+                    break
+                if capturing and line.strip().startswith("-"):
+                    events.append(line.lstrip("- ").strip())
+            summary = " ".join(events) if events else story_summary[:400]
+
+        history = list(self.world_state.get("campaign_history", []) or [])
+        history.append(summary)
+        self.update_world_state("campaign_history", history)
+
     def _format_history(self):
         return "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in self.history])
 
