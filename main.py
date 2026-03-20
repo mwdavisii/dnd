@@ -88,7 +88,10 @@ def choose_transcript_logging(save_path: str) -> "TranscriptWriter | None":
     if choice not in {"y", "yes"}:
         return None
     transcript_path = create_transcript_path(save_path)
-    model = os.getenv("OLLAMA_MODEL", "unknown")
+    if os.getenv("USE_CLAUDE_CLI", "").lower() == "true":
+        model = os.getenv("CLAUDE_CLI_MODEL", "claude-sonnet-4-6")
+    else:
+        model = os.getenv("OLLAMA_MODEL", "unknown")
     return TranscriptWriter(path=transcript_path, save_path=save_path, model=model).start()
 
 

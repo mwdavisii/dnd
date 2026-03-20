@@ -17,8 +17,9 @@ A text-based D&D learning game powered by a local Ollama model. You create a cha
 ## Requirements
 
 - Python `3.13+`
-- [Ollama](https://ollama.com/) running locally
-- A local model configured in `.env`, for example `qwen2.5`
+- One of:
+  - [Ollama](https://ollama.com/) running locally with a model (e.g. `qwen2.5`)
+  - The [Claude CLI](https://claude.ai/code) (`claude`) on your `PATH`
 
 ## Setup
 
@@ -29,7 +30,16 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Set `OLLAMA_HOST` and `OLLAMA_MODEL` in `.env`, then start the game:
+**Ollama backend** (default): set `OLLAMA_HOST` and `OLLAMA_MODEL` in `.env`.
+
+**Claude CLI backend**: set `USE_CLAUDE_CLI=true` in `.env`. Ollama vars are not required. Optionally set `CLAUDE_CLI_MODEL` to choose a model (default: `claude-sonnet-4-6`):
+
+```env
+USE_CLAUDE_CLI=true
+CLAUDE_CLI_MODEL=claude-haiku-4-5
+```
+
+Then start the game:
 
 ```bash
 python3 main.py

@@ -8,12 +8,14 @@ from dnd.npc.agent import NPCAgent
 def npc_db(monkeypatch, tmp_path):
     db_path = tmp_path / "test_npc_agent.db"
     monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+    monkeypatch.setenv("USE_CLAUDE_CLI", "false")  # prevent live CLI calls in unit tests
     initialize_database()
     return create_game_session()
 
 
 def test_npc_agent_raises_without_ollama_host(monkeypatch, npc_db):
     """NPCAgent should raise ValueError when OLLAMA_HOST is not set."""
+    monkeypatch.setenv("USE_CLAUDE_CLI", "false")
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")
     with pytest.raises(ValueError, match="OLLAMA_HOST and OLLAMA_MODEL must be set"):
@@ -22,6 +24,7 @@ def test_npc_agent_raises_without_ollama_host(monkeypatch, npc_db):
 
 def test_npc_agent_raises_without_ollama_model(monkeypatch, npc_db):
     """NPCAgent should raise ValueError when OLLAMA_MODEL is not set."""
+    monkeypatch.setenv("USE_CLAUDE_CLI", "false")
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.delenv("OLLAMA_MODEL", raising=False)
     with pytest.raises(ValueError, match="OLLAMA_HOST and OLLAMA_MODEL must be set"):
@@ -30,6 +33,7 @@ def test_npc_agent_raises_without_ollama_model(monkeypatch, npc_db):
 
 def test_npc_agent_raises_without_either(monkeypatch, npc_db):
     """NPCAgent should raise ValueError when both env vars are missing."""
+    monkeypatch.setenv("USE_CLAUDE_CLI", "false")
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
     monkeypatch.delenv("OLLAMA_MODEL", raising=False)
     with pytest.raises(ValueError):
@@ -38,12 +42,34 @@ def test_npc_agent_raises_without_either(monkeypatch, npc_db):
 
 def test_npc_agent_ok_with_both_vars(monkeypatch, npc_db):
     """NPCAgent should initialise without error when both env vars are set."""
+    monkeypatch.setenv("USE_CLAUDE_CLI", "false")
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "llama3")
     agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
     assert agent.name == "Aria"
     assert agent.ollama_host == "http://localhost:11434"
     assert agent.ollama_model == "llama3"
+    assert agent._cli_session is None
+
+
+def test_npc_agent_ok_with_claude_cli(monkeypatch, npc_db):
+    """NPCAgent should initialise without Ollama vars when USE_CLAUDE_CLI=true."""
+    monkeypatch.setenv("USE_CLAUDE_CLI", "true")
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    from dnd.llm import ClaudeCLISession
+    agent = NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
+    assert agent._cli_session is not None
+    assert isinstance(agent._cli_session, ClaudeCLISession)
+
+
+def test_npc_agent_cli_mode_skips_ollama_validation(monkeypatch, npc_db):
+    """USE_CLAUDE_CLI=true should bypass the Ollama env-var requirement."""
+    monkeypatch.setenv("USE_CLAUDE_CLI", "true")
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    # Should not raise
+    NPCAgent("Aria", "Ranger", "You are Aria.", npc_db)
 
 
 def test_npc_agent_remembers_scene(monkeypatch, npc_db):

@@ -9,6 +9,7 @@ from dnd.dm.prompts import ARC_GENERATION_PROMPT, BEAT_EVALUATION_PROMPT, OPENIN
 from dnd.character import CharacterSheet
 from dnd.database import load_world_state, save_world_state
 from dnd.data import _BEAT_PHASE, MONSTER_DATA
+from dnd.llm import call_llm, call_llm_stream, ClaudeCLISession
 from dnd.spectator import format_turn_context, momentum_label, phase_goal
 from dnd.ui import apply_base_style, highlight_quotes, style, thinking_message, wrap_text
 
@@ -22,10 +23,12 @@ class DungeonMaster:
         self.session_id = session_id
         self.history = []
         self.world_state = load_world_state(session_id)
+        self.use_claude_cli = os.getenv("USE_CLAUDE_CLI", "").lower() == "true"
         self.ollama_host = os.getenv("OLLAMA_HOST")
         self.ollama_model = os.getenv("OLLAMA_MODEL")
-        if not self.ollama_host or not self.ollama_model:
+        if not self.use_claude_cli and (not self.ollama_host or not self.ollama_model):
             raise ValueError("OLLAMA_HOST and OLLAMA_MODEL must be set in .env file")
+        self._cli_session = ClaudeCLISession() if self.use_claude_cli else None
 
     def update_world_state(self, key: str, value):
         """Updates the world state."""
@@ -62,20 +65,14 @@ class DungeonMaster:
         try:
             print(thinking_message("Generating opening scene"))
             _t0 = time.time()
-            response = requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": full_prompt,
-                    "system": SYSTEM_PROMPT,
-                    "stream": False,
-                },
-                timeout=(5, 120),
+            opening_scene = call_llm(
+                full_prompt,
+                system=SYSTEM_PROMPT,
+                ollama_host=self.ollama_host,
+                ollama_model=self.ollama_model,
+                cli_session=self._cli_session,
             )
-            response.raise_for_status()
             print(style(f"[Opening: {time.time() - _t0:.1f}s]", "gray", dim=True))
-            payload = response.json()
-            opening_scene = payload.get("response", "").strip()
             if not opening_scene:
                 opening_scene = "You arrive in a tense frontier settlement where something has clearly gone wrong. A nervous local hurries toward you with urgent news. What do you do?"
 
@@ -103,18 +100,13 @@ class DungeonMaster:
         try:
             print(thinking_message("Generating story arc"))
             _t0 = time.time()
-            response = requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                },
-                timeout=(5, 120),
+            raw = call_llm(
+                prompt,
+                ollama_host=self.ollama_host,
+                ollama_model=self.ollama_model,
+                cli_session=self._cli_session,
             )
-            response.raise_for_status()
             print(style(f"[Arc: {time.time() - _t0:.1f}s]", "gray", dim=True))
-            raw = response.json().get("response", "").strip()
             json_match = re.search(r'\{.*\}', raw, re.DOTALL)
             arc_data = json.loads(json_match.group() if json_match else raw)
 
@@ -229,18 +221,14 @@ class DungeonMaster:
         )
         try:
             _t0 = time.time()
-            eval_response = requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                },
+            raw = call_llm(
+                prompt,
+                ollama_host=self.ollama_host,
+                ollama_model=self.ollama_model,
                 timeout=(5, 30),
-            )
-            eval_response.raise_for_status()
+                cli_session=self._cli_session,
+            ).lower()
             print(style(f"[Beat: {time.time() - _t0:.1f}s]", "gray", dim=True))
-            raw = eval_response.json().get("response", "").strip().lower()
             if raw.startswith("yes"):
                 next_beat = beat_order[current_idx + 1]
                 self.update_world_state("current_beat", next_beat)
@@ -268,18 +256,14 @@ class DungeonMaster:
 
         try:
             _t0 = time.time()
-            response = requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                },
+            raw = call_llm(
+                prompt,
+                ollama_host=self.ollama_host,
+                ollama_model=self.ollama_model,
                 timeout=(5, 60),
+                cli_session=self._cli_session,
             )
-            response.raise_for_status()
             print(style(f"[Summary: {time.time() - _t0:.1f}s]", "gray", dim=True))
-            raw = response.json().get("response", "").strip()
             if raw and "EVENTS SO FAR" in raw and "OPEN THREADS" in raw:
                 self.update_world_state("story_summary", raw)
         except requests.exceptions.RequestException:
@@ -340,29 +324,13 @@ class DungeonMaster:
         try:
             print(thinking_message("DM is thinking"))
             _t0 = time.time()
-            response = requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": full_prompt,
-                    "system": SYSTEM_PROMPT,
-                    "stream": True,
-                },
-                stream=True,
-                timeout=(5, 120),
+            final_response = call_llm_stream(
+                full_prompt,
+                system=SYSTEM_PROMPT,
+                ollama_host=self.ollama_host,
+                ollama_model=self.ollama_model,
+                cli_session=self._cli_session,
             )
-            response.raise_for_status()
-
-            full_response = []
-            for line in response.iter_lines():
-                if line:
-                    decoded_line = line.decode('utf-8')
-                    json_line = json.loads(decoded_line)
-                    if not json_line.get('done', False):
-                        response_part = json_line.get('response', '')
-                        full_response.append(response_part)
-
-            final_response = "".join(full_response)
             print(style(f"[DM: {time.time() - _t0:.1f}s]", "gray", dim=True))
             # Order matters: _sanitize_dm_response checks for ending tags (e.g. <ending type="victory" />)
             # to decide whether to append "What do you do next?". _extract_structured_updates then
@@ -411,18 +379,13 @@ class DungeonMaster:
         try:
             print(thinking_message("Writing the epilogue"))
             _t0 = time.time()
-            response = requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                },
-                timeout=(5, 120),
+            raw = call_llm(
+                prompt,
+                ollama_host=self.ollama_host,
+                ollama_model=self.ollama_model,
+                cli_session=self._cli_session,
             )
-            response.raise_for_status()
             print(style(f"[Epilogue: {time.time() - _t0:.1f}s]", "gray", dim=True))
-            raw = response.json().get("response", "").strip()
             if not raw:
                 raw = "The adventure draws to a close. The party stands together, battered but unbroken, as the dust settles on what has been a harrowing journey."
             # Strip any lingering "What do you do?" from the epilogue
@@ -454,18 +417,14 @@ class DungeonMaster:
         try:
             print(thinking_message("Writing campaign summary"))
             _t0 = time.time()
-            response = requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                },
+            summary = call_llm(
+                prompt,
+                ollama_host=self.ollama_host,
+                ollama_model=self.ollama_model,
                 timeout=(5, 60),
+                cli_session=self._cli_session,
             )
-            response.raise_for_status()
             print(style(f"[Campaign: {time.time() - _t0:.1f}s]", "gray", dim=True))
-            summary = response.json().get("response", "").strip()
             if not summary:
                 raise ValueError("Empty campaign summary response")
         except (requests.exceptions.RequestException, ValueError):
@@ -505,18 +464,14 @@ class DungeonMaster:
         try:
             print(thinking_message("Narrating downtime"))
             _t0 = time.time()
-            response = requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                },
+            narration = call_llm(
+                prompt,
+                ollama_host=self.ollama_host,
+                ollama_model=self.ollama_model,
                 timeout=(5, 60),
+                cli_session=self._cli_session,
             )
-            response.raise_for_status()
             print(style(f"[Downtime: {time.time() - _t0:.1f}s]", "gray", dim=True))
-            narration = response.json().get("response", "").strip()
             if not narration:
                 raise ValueError("Empty downtime response")
             return narration

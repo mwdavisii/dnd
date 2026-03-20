@@ -12,6 +12,7 @@ from dnd.spectator import build_turn_context, format_turn_context
 def dm_db(monkeypatch, tmp_path):
     db_path = tmp_path / "test_dm_agent.db"
     monkeypatch.setattr('dnd.database.DB_FILE', db_path)
+    monkeypatch.setenv("USE_CLAUDE_CLI", "false")  # prevent live CLI calls in unit tests
     initialize_database()
     return create_game_session()
 
@@ -21,6 +22,33 @@ def player_sheet():
     sheet = MagicMock()
     sheet.get_prompt_summary.return_value = "--- Character: Testus (Wizard 1) ---"
     return sheet
+
+
+def test_dungeon_master_init_ok_with_ollama(monkeypatch, dm_db):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+    monkeypatch.setenv("USE_CLAUDE_CLI", "false")
+    dm = DungeonMaster(session_id=dm_db)
+    assert dm._cli_session is None
+    assert dm.ollama_host == "http://localhost:11434"
+
+
+def test_dungeon_master_init_ok_with_claude_cli(monkeypatch, dm_db):
+    monkeypatch.setenv("USE_CLAUDE_CLI", "true")
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    from dnd.llm import ClaudeCLISession
+    dm = DungeonMaster(session_id=dm_db)
+    assert dm._cli_session is not None
+    assert isinstance(dm._cli_session, ClaudeCLISession)
+
+
+def test_dungeon_master_raises_without_ollama_vars(monkeypatch, dm_db):
+    monkeypatch.setenv("USE_CLAUDE_CLI", "false")
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    with pytest.raises(ValueError, match="OLLAMA_HOST and OLLAMA_MODEL"):
+        DungeonMaster(session_id=dm_db)
 
 
 def test_generate_opening_scene_persists_and_reuses(monkeypatch, dm_db, player_sheet):

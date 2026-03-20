@@ -2,9 +2,9 @@
 import os
 import time
 import requests
-import json
 from dotenv import load_dotenv
 from dnd.database import load_npc_memories, save_npc_memory
+from dnd.llm import call_llm, call_llm_stream, ClaudeCLISession
 from dnd.spectator import default_fallback_action, format_turn_context, is_fallback_action, _strip_fallback_marker, validate_turn_output
 from dnd.ui import style, thinking_message, wrap_text
 
@@ -19,10 +19,12 @@ class NPCAgent:
         self.history = []
         self.memory = load_npc_memories(session_id, name)
         self.recent_actions = []
+        self.use_claude_cli = os.getenv("USE_CLAUDE_CLI", "").lower() == "true"
         self.ollama_host = os.getenv("OLLAMA_HOST")
         self.ollama_model = os.getenv("OLLAMA_MODEL")
-        if not self.ollama_host or not self.ollama_model:
+        if not self.use_claude_cli and (not self.ollama_host or not self.ollama_model):
             raise ValueError("OLLAMA_HOST and OLLAMA_MODEL must be set in .env file")
+        self._cli_session = ClaudeCLISession() if self.use_claude_cli else None
 
     def generate_response(self, prompt: str, game_context: list) -> str:
         self.history.append({"role": "user", "content": prompt})
@@ -47,29 +49,13 @@ class NPCAgent:
         try:
             print(thinking_message(f"{self.name} is thinking"))
             _t0 = time.time()
-            response = requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": full_prompt,
-                    "system": self.system_prompt,
-                    "stream": True,
-                },
-                stream=True,
-                timeout=(5, 120),
+            final_response = call_llm_stream(
+                full_prompt,
+                system=self.system_prompt,
+                ollama_host=self.ollama_host,
+                ollama_model=self.ollama_model,
+                cli_session=self._cli_session,
             )
-            response.raise_for_status()
-
-            full_response = []
-            for line in response.iter_lines():
-                if line:
-                    decoded_line = line.decode('utf-8')
-                    json_line = json.loads(decoded_line)
-                    if not json_line.get('done', False):
-                        response_part = json_line.get('response', '')
-                        full_response.append(response_part)
-
-            final_response = "".join(full_response)
             print(style(f"[{self.name}: {time.time() - _t0:.1f}s]", "gray", dim=True))
             self.history.append({"role": "assistant", "content": final_response})
             self.remember(f"{self.name} said: {final_response}")
@@ -149,24 +135,19 @@ class NPCAgent:
         turn_context: dict | None,
         actor_type: str,
     ) -> str:
-        """Make a single Ollama call and validate the result. Returns the action (possibly marked as fallback)."""
+        """Make a single LLM call and validate the result. Returns the action (possibly marked as fallback)."""
         print(thinking_message(f"{self.name} is thinking"))
         _t0 = time.time()
-        response = requests.post(
-            f"{self.ollama_host}/api/generate",
-            json={
-                "model": self.ollama_model,
-                "prompt": prompt,
-                "system": self.system_prompt,
-                "stream": False,
-            },
-            timeout=(5, 120),
+        raw = call_llm(
+            prompt,
+            system=self.system_prompt,
+            ollama_host=self.ollama_host,
+            ollama_model=self.ollama_model,
+            cli_session=self._cli_session,
         )
-        response.raise_for_status()
         print(style(f"[{self.name}: {time.time() - _t0:.1f}s]", "gray", dim=True))
-        payload = response.json()
         return validate_turn_output(
-            payload.get("response", "").strip(),
+            raw,
             actor_name=self.name,
             actor_type=actor_type,
             recent_party_actions=party_actions,
